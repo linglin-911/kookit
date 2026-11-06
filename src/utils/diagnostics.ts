@@ -56,9 +56,11 @@ export const beginDiagnostic = (
     if (finished) return;
     finished = true;
     const durationMs = Math.round((now() - startedAt) * 10) / 10;
-    diagnosticLog("info", scope, `${event}:end`, {
+    const isSlow = durationMs >= 1000;
+    diagnosticLog(isSlow ? "warn" : "info", scope, `${event}:end`, {
       ...(result || {}),
       durationMs,
+      slow: isSlow,
     });
   };
 };
