@@ -619,28 +619,28 @@ class GeneralRender extends EventEmitter {
         doc,
         iframe
       );
-    if (chapterHref && chapterHref.startsWith("kindle")) {
-      let result = await this.book.resolveHref(chapterHref);
-      if (result.anchor) {
-        let node = result.anchor(doc);
-        if (node) {
-          await this.goToNode(node);
+      if (chapterHref && chapterHref.startsWith("kindle")) {
+        let result = await this.book.resolveHref(chapterHref);
+        if (result.anchor) {
+          let node = result.anchor(doc);
+          if (node) {
+            await this.goToNode(node);
+          }
         }
       }
-    }
-    if (chapterHref && chapterHref.indexOf("#") > -1) {
-      await handleScrollPosition(
-        this.element,
-        this.readerMode,
-        "",
-        "",
-        chapterHref,
-        "",
-        doc
-      );
-    }
-    await this.record();
-    this.trigger("rendered");
+      if (chapterHref && chapterHref.indexOf("#") > -1) {
+        await handleScrollPosition(
+          this.element,
+          this.readerMode,
+          "",
+          "",
+          chapterHref,
+          "",
+          doc
+        );
+      }
+      await this.record();
+      this.trigger("rendered");
       this.addPageAnimation();
       finish({ completed: true });
     } catch (error) {
@@ -653,9 +653,17 @@ class GeneralRender extends EventEmitter {
     }
   }
   async goToPosition(bookLocationStr: string) {
+    const finish = beginDiagnostic("Reader", "goToPosition", {
+      traceId: this.diagnosticTraceId,
+      format: this.format,
+      locationJsonCharacters: bookLocationStr.length,
+    });
     let doc = this.getDocument();
     let iframe = this.getIframe();
-    if (!doc || !iframe) return;
+    if (!doc || !iframe) {
+      finish({ skipped: true, reason: "reader-document-unavailable" });
+      return;
+    }
     let bookLocation = JSON.parse(bookLocationStr);
     this.tempLocation = {
       text: bookLocation.text,
@@ -724,6 +732,11 @@ class GeneralRender extends EventEmitter {
     await this.record();
     this.trigger("rendered");
     this.addPageAnimation();
+    finish({
+      completed: true,
+      chapterIndex: parseInt(chapterDocIndex || "0"),
+      hasCfi: Boolean(cfi),
+    });
   }
   getDocument(): Document | null {
     let pageArea = document.getElementById("page-area");
