@@ -4,6 +4,10 @@ import { makeHtmlBook } from "../libs/html";
 import GeneralParser from "../utils/generalParser";
 import chardet from "chardet";
 import { getCache } from "../libs/cache.js";
+import {
+  beginDiagnostic,
+  diagnosticError,
+} from "../utils/diagnostics";
 
 class TxtRender extends GeneralRender {
   txtBuffer: ArrayBuffer;
@@ -15,47 +19,123 @@ class TxtRender extends GeneralRender {
     this.charset = config.charset;
     this.parserRegex = config.parserRegex;
   }
-  renderTo(element: HTMLElement, bookLocation?: any): Promise<void> {
-    return new Promise<void>(async (resolve, reject) => {
+  async renderTo(element: HTMLElement, bookLocation?: any): Promise<void> {
+    const finish = beginDiagnostic("TXT", "renderTo", {
+      traceId: this.diagnosticTraceId,
+      bufferBytes: this.txtBuffer.byteLength,
+    });
+    try {
       this.element = element;
       if (!this.book) {
         await this.parse(bookLocation);
       }
-      let parser = new GeneralParser(this.book);
+      const parser = new GeneralParser(this.book);
+      const chapterFinish = beginDiagnostic("TXT", "buildChapterIndex", {
+        traceId: this.diagnosticTraceId,
+      });
       this.chapterList = await parser.getChapter(this.book.toc);
       this.chapterDocList = await parser.getChapterDoc();
+      chapterFinish({
+        chapterCount: this.chapterList.length,
+        chapterDocCount: this.chapterDocList.length,
+      });
       createIframe(element, this.isAllowScript);
-      let doc = this.getDocument();
-      if (!doc) return;
+      const doc = this.getDocument();
+      if (!doc) {
+        throw new Error("TXT reader iframe document is unavailable after creation");
+      }
       handleLayout(element, this.readerMode, doc);
-      resolve();
-    });
+      finish({
+        chapterCount: this.chapterList.length,
+        chapterDocCount: this.chapterDocList.length,
+        iframeReady: true,
+      });
+    } catch (error) {
+      diagnosticError("TXT", "renderTo:failed", error, {
+        traceId: this.diagnosticTraceId,
+      });
+      finish({ failed: true });
+      throw error;
+    }
   }
   async parse(bookLocation?: any) {
+    const finish = beginDiagnostic("TXT", "parse", {
+      traceId: this.diagnosticTraceId,
+      bufferBytes: this.txtBuffer.byteLength,
+      charset: this.charset || "default",
+      refresh: bookLocation?.refresh === true,
+    });
     try {
       const textDecoder = new TextDecoder(this.charset);
       const bytes = new Uint8Array(this.txtBuffer);
-      let text = textDecoder.decode(bytes);
-      this.book = makeHtmlBook(text, true, this.parserRegex, bookLocation);
+      const decodeFinish = beginDiagnostic("TXT", "decode", {
+        traceId: this.diagnosticTraceId,
+        bufferBytes: bytes.byteLength,
+        charset: this.charset || "default",
+      });
+      const text = textDecoder.decode(bytes);
+      decodeFinish({ textCharacters: text.length });
+      this.book = makeHtmlBook(
+        text,
+        true,
+        this.parserRegex,
+        bookLocation,
+        this.diagnosticTraceId
+      );
+      finish({ textCharacters: text.length });
     } catch (error) {
-      console.error(error);
+      diagnosticError("TXT", "parse:failed", error, {
+        traceId: this.diagnosticTraceId,
+        bufferBytes: this.txtBuffer.byteLength,
+      });
+      finish({ failed: true });
       throw error;
     }
   }
   async refreshContent() {
-    await this.parse({ refresh: true });
-    let parser = new GeneralParser(this.book);
-    this.chapterList = await parser.getChapter(this.book.toc);
-    this.chapterDocList = await parser.getChapterDoc();
-    await this.record();
-    this.chapterSizeCache = null;
-    return this.chapterList;
+    const finish = beginDiagnostic("TXT", "refreshContent", {
+      traceId: this.diagnosticTraceId,
+      bufferBytes: this.txtBuffer.byteLength,
+    });
+    try {
+      await this.parse({ refresh: true });
+      const parser = new GeneralParser(this.book);
+      this.chapterList = await parser.getChapter(this.book.toc);
+      this.chapterDocList = await parser.getChapterDoc();
+      await this.record();
+      this.chapterSizeCache = null;
+      finish({
+        chapterCount: this.chapterList.length,
+        chapterDocCount: this.chapterDocList.length,
+      });
+      return this.chapterList;
+    } catch (error) {
+      diagnosticError("TXT", "refreshContent:failed", error, {
+        traceId: this.diagnosticTraceId,
+      });
+      finish({ failed: true });
+      throw error;
+    }
   }
   async preCache() {
-    if (!this.book) {
-      await this.parse({ refresh: true });
+    const finish = beginDiagnostic("TXT", "preCache", {
+      traceId: this.diagnosticTraceId,
+      bufferBytes: this.txtBuffer.byteLength,
+    });
+    try {
+      if (!this.book) {
+        await this.parse({ refresh: true });
+      }
+      const cache = await getCache(this.book);
+      finish({ cacheCreated: Boolean(cache) });
+      return cache;
+    } catch (error) {
+      diagnosticError("TXT", "preCache:failed", error, {
+        traceId: this.diagnosticTraceId,
+      });
+      finish({ failed: true });
+      throw error;
     }
-    return await getCache(this.book);
   }
 
   async getMetadata(txtBuffer: ArrayBuffer) {

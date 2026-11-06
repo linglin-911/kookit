@@ -2,6 +2,11 @@ import rangy from "rangy/lib/rangy-core.js";
 import "rangy/lib/rangy-textrange";
 import { isVerticalLayout } from "./layoutUtil";
 import { buildHighlightStyleForType } from "./common";
+import {
+  beginDiagnostic,
+  diagnosticError,
+  diagnosticLog,
+} from "./diagnostics";
 declare var window: any;
 
 const TOOLTIP_ID = "kookit-note-tooltip";
@@ -180,8 +185,13 @@ const resolveNoteRanges = (
   }>,
   selection: any,
   doc: Document,
-  iWin: any
+  iWin: any,
+  traceId?: string
 ): Array<ResolvedNoteItem | undefined> => {
+  const finish = beginDiagnostic("Notes", "resolveNoteRanges", {
+    traceId: traceId || "unknown",
+    noteCount: notes.length,
+  });
   const resolved: Array<ResolvedNoteItem | undefined> = new Array(
     notes.length
   );
@@ -254,6 +264,10 @@ const resolveNoteRanges = (
   }
   selection.removeAllRanges();
   if (iWin?.getSelection()) iWin.getSelection().empty();
+  finish({
+    candidateCount: indices.length,
+    resolvedCount: resolved.filter(Boolean).length,
+  });
   return resolved;
 };
 
@@ -276,15 +290,23 @@ export const showNoteHighlightBatch = (
   handleNoteClick: any,
   doc: Document,
   iframe: any,
-  isMobile: boolean
+  isMobile: boolean,
+  traceId?: string
 ): Promise<void> => {
+  const finish = beginDiagnostic("Notes", "showNoteHighlightBatch", {
+    traceId: traceId || "unknown",
+    noteCount: notes.length,
+    bodyChildCount: doc.body?.childElementCount || 0,
+  });
   let iWin: any = iframe.contentWindow || iframe.contentDocument?.defaultView;
   let selection = rangy.getSelection(iframe);
 
-  const resolved = resolveNoteRanges(notes, selection, doc, iWin);
+  const resolved = resolveNoteRanges(notes, selection, doc, iWin, traceId);
+  const resolvedCount = resolved.filter(Boolean).length;
 
   return new Promise<void>((resolvePromise) => {
     if (resolved.length === 0) {
+      finish({ resolvedCount: 0, appliedCount: 0 });
       resolvePromise();
       return;
     }
@@ -296,12 +318,23 @@ export const showNoteHighlightBatch = (
         ? iWin.requestAnimationFrame.bind(iWin)
         : (callback: () => void) => setTimeout(callback, 0);
     let index = 0;
+    let appliedTotal = 0;
+    let chunkCount = 0;
+    let slowestChunkMs = 0;
     const applyChunk = () => {
       if (noteBatchGen.get(doc) !== gen) {
+        finish({
+          cancelled: true,
+          resolvedCount,
+          appliedCount: appliedTotal,
+          chunkCount,
+        });
         resolvePromise();
         return;
       }
       const chunkStart = Date.now();
+      const preciseChunkStart =
+        typeof performance !== "undefined" ? performance.now() : chunkStart;
       let applied = 0;
       while (
         index < resolved.length &&
@@ -312,21 +345,49 @@ export const showNoteHighlightBatch = (
         if (!r) continue;
         // Wrap in a rangy-compatible shape so highlightRange can access
         // .nativeRange
-        highlightRange(
-          { nativeRange: r.nativeRange },
-          r.colorCode,
-          r.noteKey,
-          handleNoteClick,
-          doc,
-          r.isNote,
-          isMobile,
-          r.noteContent
-        );
-        applied++;
+        try {
+          highlightRange(
+            { nativeRange: r.nativeRange },
+            r.colorCode,
+            r.noteKey,
+            handleNoteClick,
+            doc,
+            r.isNote,
+            isMobile,
+            r.noteContent
+          );
+          applied++;
+          appliedTotal++;
+        } catch (error) {
+          diagnosticError("Notes", "highlightRange:failed", error, {
+            traceId: traceId || "unknown",
+            batchIndex: index - 1,
+          });
+          throw error;
+        }
+      }
+      const chunkDurationMs =
+        (typeof performance !== "undefined" ? performance.now() : Date.now()) -
+        preciseChunkStart;
+      chunkCount++;
+      slowestChunkMs = Math.max(slowestChunkMs, chunkDurationMs);
+      if (chunkDurationMs >= 16) {
+        diagnosticLog("warn", "Notes", "highlightChunk:slow", {
+          traceId: traceId || "unknown",
+          chunkCount,
+          appliedInChunk: applied,
+          chunkDurationMs: Math.round(chunkDurationMs * 10) / 10,
+        });
       }
       if (index < resolved.length) {
         schedule(applyChunk);
       } else {
+        finish({
+          resolvedCount,
+          appliedCount: appliedTotal,
+          chunkCount,
+          slowestChunkMs: Math.round(slowestChunkMs * 10) / 10,
+        });
         resolvePromise();
       }
     };
@@ -520,7 +581,10 @@ export const showPDFHighlight = (
   }
 };
 
-export const clearHighlight = (doc: Document) => {
+export const clearHighlight = (doc: Document, traceId?: string) => {
+  const finish = beginDiagnostic("Notes", "clearHighlight", {
+    traceId: traceId || "unknown",
+  });
   // Cancel any pending chunked batch rendering into this document
   bumpNoteBatchGen(doc);
   // Remove absolutely-positioned note icon elements (📋) first
@@ -556,6 +620,11 @@ export const clearHighlight = (doc: Document) => {
   }
   parentsToNormalize.forEach((parent) => {
     (parent as Element).normalize();
+  });
+  finish({
+    highlightCount: elements.length,
+    iconCount: icons.length,
+    normalizedParentCount: parentsToNormalize.size,
   });
 };
 

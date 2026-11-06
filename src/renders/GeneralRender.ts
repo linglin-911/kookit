@@ -63,6 +63,12 @@ import {
 import SpeedReadingManager from "../utils/speedReadingUtil";
 import ReadingRulerManager from "../utils/readingRulerUtil";
 import ParagraphModeManager from "../utils/paragraphModeUtil";
+import {
+  beginDiagnostic,
+  createDiagnosticTraceId,
+  diagnosticError,
+  diagnosticLog,
+} from "../utils/diagnostics";
 declare var window: any;
 export interface TextRule {
   id: string;
@@ -77,6 +83,7 @@ export interface TextRule {
 class GeneralRender extends EventEmitter {
   readerMode: string;
   format: string;
+  diagnosticTraceId: string;
   isPaginated: boolean = false;
   animation: string = "none";
   convertChinese: string | undefined;
@@ -170,6 +177,14 @@ class GeneralRender extends EventEmitter {
     window.readerMode = config.readerMode;
     this.animation = config.animation || "none";
     this.format = config.format;
+    this.diagnosticTraceId = createDiagnosticTraceId(
+      (config.format || "book").toLowerCase()
+    );
+    diagnosticLog("info", "Reader", "renditionCreated", {
+      traceId: this.diagnosticTraceId,
+      format: this.format,
+      readerMode: this.readerMode,
+    });
     this.isPaginated = isPaginatedFormat(config.format);
     this.convertChinese = config.convertChinese;
     window.convertChinese = config.convertChinese;
@@ -580,21 +595,30 @@ class GeneralRender extends EventEmitter {
     }
   }
   async goToChapter(chapterDocIndex, chapterHref, chapterTitle) {
+    const finish = beginDiagnostic("Reader", "goToChapter", {
+      traceId: this.diagnosticTraceId,
+      chapterIndex: parseInt(chapterDocIndex),
+      format: this.format,
+    });
     let doc = this.getDocument();
     let iframe = this.getIframe();
-    if (!doc || !iframe) return;
-    await handleRenderChapter(
-      parseInt(chapterDocIndex),
-      chapterTitle,
-      chapterHref,
-      this.chapterDocList,
-      this.element,
-      this.readerMode,
-      this.format,
-      this.tempLocation,
-      doc,
-      iframe
-    );
+    if (!doc || !iframe) {
+      finish({ skipped: true, reason: "reader-document-unavailable" });
+      return;
+    }
+    try {
+      await handleRenderChapter(
+        parseInt(chapterDocIndex),
+        chapterTitle,
+        chapterHref,
+        this.chapterDocList,
+        this.element,
+        this.readerMode,
+        this.format,
+        this.tempLocation,
+        doc,
+        iframe
+      );
     if (chapterHref && chapterHref.startsWith("kindle")) {
       let result = await this.book.resolveHref(chapterHref);
       if (result.anchor) {
@@ -617,7 +641,16 @@ class GeneralRender extends EventEmitter {
     }
     await this.record();
     this.trigger("rendered");
-    this.addPageAnimation();
+      this.addPageAnimation();
+      finish({ completed: true });
+    } catch (error) {
+      diagnosticError("Reader", "goToChapter:failed", error, {
+        traceId: this.diagnosticTraceId,
+        chapterIndex: parseInt(chapterDocIndex),
+      });
+      finish({ failed: true });
+      throw error;
+    }
   }
   async goToPosition(bookLocationStr: string) {
     let doc = this.getDocument();
@@ -1482,11 +1515,28 @@ class GeneralRender extends EventEmitter {
     return charRange;
   }
   async renderHighlighters(notes: any[], handleNoteClick: any) {
+    const finish = beginDiagnostic("Notes", "renderHighlighters", {
+      traceId: this.diagnosticTraceId,
+      noteCount: notes.length,
+      format: this.format,
+    });
     notes = notes.reverse();
     let doc = this.getDocument();
     let iframe = this.getIframe();
-    if (!doc || !iframe) return;
-    clearHighlight(doc);
+    if (!doc || !iframe) {
+      finish({ skipped: true, reason: "reader-document-unavailable" });
+      return;
+    }
+    const clearStartedAt =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    clearHighlight(doc, this.diagnosticTraceId);
+    const clearDurationMs =
+      (typeof performance !== "undefined" ? performance.now() : Date.now()) -
+      clearStartedAt;
+    diagnosticLog("info", "Notes", "clearHighlightsComplete", {
+      traceId: this.diagnosticTraceId,
+      durationMs: Math.round(clearDurationMs * 10) / 10,
+    });
 
     // Use batch API: resolve all character ranges on clean DOM first,
     // then apply all inline highlights. This prevents earlier highlights
@@ -1505,13 +1555,16 @@ class GeneralRender extends EventEmitter {
         handleNoteClick,
         doc,
         iframe,
-        this.isMobile === "yes"
+        this.isMobile === "yes",
+        this.diagnosticTraceId
       );
-    } catch (e) {
-      console.error(
-        e,
-        "Exception has been caught when restore character ranges."
-      );
+      finish({ completed: true, noteCount: batchItems.length });
+    } catch (error) {
+      diagnosticError("Notes", "renderHighlighters:failed", error, {
+        traceId: this.diagnosticTraceId,
+        noteCount: batchItems.length,
+      });
+      finish({ failed: true });
     }
   }
   removeOneNote(key: string, chapterDocIndex: number) {

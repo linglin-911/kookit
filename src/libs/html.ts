@@ -1,14 +1,33 @@
 import { cleanText, isTitle, txtToHtml } from "./textProcessor";
+import {
+  beginDiagnostic,
+  diagnosticError,
+} from "../utils/diagnostics";
 export const makeHtmlBook = (
   bookStr: string,
   isTxt = false,
   parserRegex = "",
-  bookLocation?: any
+  bookLocation?: any,
+  traceId?: string
 ) => {
-  const bookDoc = new DOMParser().parseFromString(
-    isTxt ? txtToHtml(bookStr, parserRegex, bookLocation) : bookStr,
-    "text/html"
-  );
+  const finish = beginDiagnostic("TXT", "makeHtmlBook", {
+    traceId: traceId || "unknown",
+    sourceCharacters: bookStr.length,
+    isTxt,
+  });
+  const htmlFinish = beginDiagnostic("TXT", "buildHtml", {
+    traceId: traceId || "unknown",
+  });
+  const html = isTxt
+    ? txtToHtml(bookStr, parserRegex, bookLocation, traceId)
+    : bookStr;
+  htmlFinish({ htmlCharacters: html.length });
+  const domFinish = beginDiagnostic("TXT", "parseHtmlDom", {
+    traceId: traceId || "unknown",
+    htmlCharacters: html.length,
+  });
+  const bookDoc = new DOMParser().parseFromString(html, "text/html");
+  domFinish({ bodyChildCount: bookDoc.body.childElementCount });
   let chapterDomList = getTitleElement(bookDoc);
   if (chapterDomList.length === 0) {
     chapterDomList = getTitlefromText(bookDoc) as any;
@@ -22,12 +41,43 @@ export const makeHtmlBook = (
     chapterDomList[i].parentNode &&
       chapterDomList[i].parentNode!.insertBefore(newItem, chapterDomList[i]);
   }
+  const chapterSplitFinish = beginDiagnostic("TXT", "splitChapterHtml", {
+    traceId: traceId || "unknown",
+    chapterHeadingCount: chapterDomList.length,
+  });
   const chapterList = getChapterDoc(bookDoc.body.innerHTML);
+  chapterSplitFinish({
+    chapterCount: chapterList.length,
+    totalChapterHtmlCharacters: chapterList.reduce(
+      (total, chapter) => total + (chapter.text?.length || 0),
+      0
+    ),
+  });
+  finish({ chapterCount: chapterList.length });
   const load = async (index: number) => {
-    const page = URL.createObjectURL(
-      new Blob([chapterList[index].text], { type: "text/html" })
-    );
-    return page;
+    const chapter = chapterList[index];
+    const loadFinish = beginDiagnostic("TXT", "loadChapterHtml", {
+      traceId: traceId || "unknown",
+      chapterIndex: index,
+      htmlCharacters: chapter?.text?.length || 0,
+    });
+    try {
+      if (!chapter) {
+        throw new Error(`TXT chapter index out of range: ${index}`);
+      }
+      const page = URL.createObjectURL(
+        new Blob([chapter.text], { type: "text/html" })
+      );
+      loadFinish({ blobUrlCreated: true });
+      return page;
+    } catch (error) {
+      diagnosticError("TXT", "loadChapterHtml:failed", error, {
+        traceId: traceId || "unknown",
+        chapterIndex: index,
+      });
+      loadFinish({ failed: true });
+      throw error;
+    }
   };
   const unload = (index: number) => {};
   const book: any = {};

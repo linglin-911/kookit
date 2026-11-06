@@ -1,3 +1,5 @@
+import { beginDiagnostic, diagnosticLog } from "../utils/diagnostics";
+
 let keywords = [
   "章",
   "节",
@@ -103,12 +105,24 @@ export const findLastIndex = (arr: any[], callback: (item: any) => boolean) => {
 export const txtToHtml = (
   text: string,
   parserRegex: string,
-  bookLocation?: any
+  bookLocation?: any,
+  traceId?: string
 ) => {
+  const finish = beginDiagnostic("TXT", "txtToHtml", {
+    traceId: traceId || "unknown",
+    textCharacters: text.length,
+    refresh: bookLocation?.refresh === true,
+    noTitle: bookLocation?.noTitle === true,
+  });
+  const splitFinish = beginDiagnostic("TXT", "splitLines", {
+    traceId: traceId || "unknown",
+    textCharacters: text.length,
+  });
   let lines = text.split("\n");
   if (lines.length === 1) {
     lines = text.split("\r");
   }
+  splitFinish({ lineCount: lines.length });
   // 丢弃文件开头的纯空白行，避免空白内容脱离第一个章节标题单独成章
   while (lines.length > 0 && lines[0].trim() === "") {
     lines.shift();
@@ -124,6 +138,11 @@ export const txtToHtml = (
     noTitle = true;
   }
   if (noTitle) {
+    diagnosticLog("info", "TXT", "conversionMode", {
+      traceId: traceId || "unknown",
+      mode: "fixed-500-lines",
+      lineCount: lines.length,
+    });
     //分章方式改成每500行分一章，且不进行标题识别
     let chapterIndex = 0;
     if (lines.length === 0) {
@@ -144,6 +163,11 @@ export const txtToHtml = (
       chapterIndex++;
     }
   } else if (lines.length > 10000 && !isRefresh) {
+    diagnosticLog("info", "TXT", "conversionMode", {
+      traceId: traceId || "unknown",
+      mode: "large-file-window",
+      lineCount: lines.length,
+    });
     if (!bookLocation || !bookLocation.chapterTitle) {
       bookLocation = {
         text: lines[0],
@@ -171,9 +195,23 @@ export const txtToHtml = (
     const titlesInSlice = relevantLines.filter((item) => {
       return item && isTitle(item, parserRegex);
     });
+    diagnosticLog("info", "TXT", "largeFileWindowScanned", {
+      traceId: traceId || "unknown",
+      startLine: startIndex,
+      endLine: endIndex,
+      windowLineCount: relevantLines.length,
+      detectedTitleCount: titlesInSlice.length,
+    });
     if (titlesInSlice.length <= 1) {
       // Fallback to processing the entire file if no titles found in slice
-      return txtToHtml(text, parserRegex, { noTitle: true });
+      diagnosticLog("warn", "TXT", "largeFileWindowFallback", {
+        traceId: traceId || "unknown",
+        reason: "insufficient-chapter-titles",
+        detectedTitleCount: titlesInSlice.length,
+        lineCount: lines.length,
+      });
+      finish({ fallback: "fixed-500-lines", lineCount: lines.length });
+      return txtToHtml(text, parserRegex, { noTitle: true }, traceId);
     }
 
     // Create a Set of cleaned titles for fast lookup
@@ -219,6 +257,12 @@ export const txtToHtml = (
       }
     }
   } else {
+    diagnosticLog("info", "TXT", "conversionMode", {
+      traceId: traceId || "unknown",
+      mode: "full-file",
+      lineCount: lines.length,
+      refresh: isRefresh,
+    });
     // --- Loop for Full File (if not large or no bookLocation) ---
     let lastTitleIndex = -1;
     let hasContentSinceTitle = false;
@@ -256,9 +300,20 @@ export const txtToHtml = (
   const finalHtml = htmlParts.join("");
 
   if (finalHtml && finalHtml.includes("<h1")) {
+    finish({
+      lineCount: lines.length,
+      htmlCharacters: finalHtml.length,
+      htmlParts: htmlParts.length,
+    });
     return finalHtml;
   } else {
-    return txtToHtml(text, parserRegex, { noTitle: true });
+    diagnosticLog("warn", "TXT", "conversionFallback", {
+      traceId: traceId || "unknown",
+      reason: "no-chapter-heading-generated",
+      lineCount: lines.length,
+    });
+    finish({ fallback: "fixed-500-lines", lineCount: lines.length });
+    return txtToHtml(text, parserRegex, { noTitle: true }, traceId);
   }
 };
 export const cleanText = (str) => {
