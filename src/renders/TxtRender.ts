@@ -139,6 +139,10 @@ class TxtRender extends GeneralRender {
   }
 
   async getMetadata(txtBuffer: ArrayBuffer) {
+    const finish = beginDiagnostic("TXT", "getMetadata", {
+      traceId: this.diagnosticTraceId,
+      bufferBytes: txtBuffer.byteLength,
+    });
     try {
       // Define the size of the chunk to read for detection (e.g., 4KB)
       const CHUNK_SIZE = 4096;
@@ -156,10 +160,15 @@ class TxtRender extends GeneralRender {
       // Fallback to utf8 if detection fails or returns null/undefined
       const charset = detectedCharset || "utf8";
       this.charset = charset;
+      finish({ charset, bytesSampled: sizeToRead });
 
       return { charset: charset };
     } catch (error) {
-      console.error("Error detecting charset:", error);
+      diagnosticError("TXT", "getMetadata:failed", error, {
+        traceId: this.diagnosticTraceId,
+        bufferBytes: txtBuffer.byteLength,
+      });
+      finish({ failed: true, fallbackCharset: "utf8" });
       // Fallback to utf8 in case of error during detection
       this.charset = "utf8";
       return { charset: "utf8" };

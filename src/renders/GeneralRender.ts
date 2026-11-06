@@ -664,6 +664,7 @@ class GeneralRender extends EventEmitter {
       finish({ skipped: true, reason: "reader-document-unavailable" });
       return;
     }
+    try {
     let bookLocation = JSON.parse(bookLocationStr);
     this.tempLocation = {
       text: bookLocation.text,
@@ -692,6 +693,7 @@ class GeneralRender extends EventEmitter {
       const cfiInfo = new CFI(cfi, {});
       let doc = this.getDocument();
       if (!doc) {
+        finish({ skipped: true, reason: "document-unavailable-after-cfi" });
         return;
       }
       const { node, offset } = cfiInfo.resolve(doc, {});
@@ -737,6 +739,13 @@ class GeneralRender extends EventEmitter {
       chapterIndex: parseInt(chapterDocIndex || "0"),
       hasCfi: Boolean(cfi),
     });
+    } catch (error) {
+      diagnosticError("Reader", "goToPosition:failed", error, {
+        traceId: this.diagnosticTraceId,
+      });
+      finish({ failed: true });
+      throw error;
+    }
   }
   getDocument(): Document | null {
     let pageArea = document.getElementById("page-area");

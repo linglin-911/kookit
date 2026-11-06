@@ -179,10 +179,15 @@ export const txtToHtml = (
       bookLocation.text = bookLocation.chapterTitle || "";
     }
     // --- Slicing and Title Identification Logic ---
+    const targetLineFinish = beginDiagnostic("TXT", "findCurrentLine", {
+      traceId: traceId || "unknown",
+      lineCount: lines.length,
+    });
     let targetLineIndex = lines.findIndex((item) => {
       // Optimization: cleanText called only once here if needed often
       return cleanText(item) === cleanText(bookLocation.text);
     });
+    targetLineFinish({ targetLineIndex });
     if (targetLineIndex === -1) {
       targetLineIndex = 0;
     }
@@ -192,9 +197,14 @@ export const txtToHtml = (
     const endIndex = Math.min(targetLineIndex + 3000, lines.length);
     const relevantLines = lines.slice(startIndex, endIndex); // Process only the relevant slice
     // Identify potential titles within the relevant slice
+    const titleScanFinish = beginDiagnostic("TXT", "scanChapterTitles", {
+      traceId: traceId || "unknown",
+      windowLineCount: relevantLines.length,
+    });
     const titlesInSlice = relevantLines.filter((item) => {
       return item && isTitle(item, parserRegex);
     });
+    titleScanFinish({ detectedTitleCount: titlesInSlice.length });
     diagnosticLog("info", "TXT", "largeFileWindowScanned", {
       traceId: traceId || "unknown",
       startLine: startIndex,
