@@ -665,80 +665,80 @@ class GeneralRender extends EventEmitter {
       return;
     }
     try {
-    let bookLocation = JSON.parse(bookLocationStr);
-    this.tempLocation = {
-      text: bookLocation.text,
-      chapterTitle: bookLocation.chapterTitle,
-      chapterDocIndex: bookLocation.chapterDocIndex,
-      chapterHref: bookLocation.chapterHref,
-      count: bookLocation.count,
-      page: bookLocation.page,
-      percentage: bookLocation.percentage,
-    };
-    let { text, chapterTitle, chapterDocIndex, chapterHref, count, page, cfi } =
-      bookLocation;
-    await handleRenderChapter(
-      parseInt(chapterDocIndex),
-      chapterTitle,
-      chapterHref,
-      this.chapterDocList,
-      this.element,
-      this.readerMode,
-      this.format,
-      this.tempLocation,
-      doc,
-      iframe
-    );
-    if (cfi) {
-      const cfiInfo = new CFI(cfi, {});
-      let doc = this.getDocument();
-      if (!doc) {
-        finish({ skipped: true, reason: "document-unavailable-after-cfi" });
-        return;
-      }
-      const { node, offset } = cfiInfo.resolve(doc, {});
+      let bookLocation = JSON.parse(bookLocationStr);
+      this.tempLocation = {
+        text: bookLocation.text,
+        chapterTitle: bookLocation.chapterTitle,
+        chapterDocIndex: bookLocation.chapterDocIndex,
+        chapterHref: bookLocation.chapterHref,
+        count: bookLocation.count,
+        page: bookLocation.page,
+        percentage: bookLocation.percentage,
+      };
+      let { text, chapterTitle, chapterDocIndex, chapterHref, count, page, cfi } =
+        bookLocation;
+      await handleRenderChapter(
+        parseInt(chapterDocIndex),
+        chapterTitle,
+        chapterHref,
+        this.chapterDocList,
+        this.element,
+        this.readerMode,
+        this.format,
+        this.tempLocation,
+        doc,
+        iframe
+      );
+      if (cfi) {
+        const cfiInfo = new CFI(cfi, {});
+        let doc = this.getDocument();
+        if (!doc) {
+          finish({ skipped: true, reason: "document-unavailable-after-cfi" });
+          return;
+        }
+        const { node, offset } = cfiInfo.resolve(doc, {});
 
-      if (node) {
-        let element: Element | null = null;
-        let currentNode: Node | null = node;
+        if (node) {
+          let element: Element | null = null;
+          let currentNode: Node | null = node;
 
-        while (currentNode) {
-          const temp: Element = currentNode as Element;
-          if (
-            temp.tagName &&
-            "h1,h2,h3,h4,h5,h6,p,div,ul,dl,ol,pre,li,dt,dd,blockquote,address,kookitmarker".indexOf(
-              temp.tagName.toLowerCase()
-            ) > -1
-          ) {
-            element = temp;
-            break;
+          while (currentNode) {
+            const temp: Element = currentNode as Element;
+            if (
+              temp.tagName &&
+              "h1,h2,h3,h4,h5,h6,p,div,ul,dl,ol,pre,li,dt,dd,blockquote,address,kookitmarker".indexOf(
+                temp.tagName.toLowerCase()
+              ) > -1
+            ) {
+              element = temp;
+              break;
+            }
+            currentNode = currentNode.parentNode;
           }
-          currentNode = currentNode.parentNode;
-        }
-        if (element) {
-          count = "ignore";
-          text = element.textContent;
+          if (element) {
+            count = "ignore";
+            text = element.textContent;
+          }
         }
       }
-    }
-    await handleScrollPosition(
-      this.element,
-      this.readerMode,
-      text,
-      count,
-      "",
-      page,
-      doc
-    );
-    rangy.init();
-    await this.record();
-    this.trigger("rendered");
-    this.addPageAnimation();
-    finish({
-      completed: true,
-      chapterIndex: parseInt(chapterDocIndex || "0"),
-      hasCfi: Boolean(cfi),
-    });
+      await handleScrollPosition(
+        this.element,
+        this.readerMode,
+        text,
+        count,
+        "",
+        page,
+        doc
+      );
+      rangy.init();
+      await this.record();
+      this.trigger("rendered");
+      this.addPageAnimation();
+      finish({
+        completed: true,
+        chapterIndex: parseInt(chapterDocIndex || "0"),
+        hasCfi: Boolean(cfi),
+      });
     } catch (error) {
       diagnosticError("Reader", "goToPosition:failed", error, {
         traceId: this.diagnosticTraceId,
