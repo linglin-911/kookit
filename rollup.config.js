@@ -30,7 +30,7 @@ const terserPlugin = () =>
         }
   );
 const getDesktopOutputPath = (filename) => {
-  const basePath = "D:\\Project\\koodo-reader";
+  const basePath = "D:\\07_ProgramFiles\\Koodo-innoo";
   return path.join(basePath, "src", "assets", "lib", filename);
 };
 const getMobileOutputPath = (filename) => {
