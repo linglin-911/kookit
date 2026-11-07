@@ -7,6 +7,7 @@ import {
   decodeTxtSource,
   buildPersistentTxtIndex,
   TxtIndexStore,
+  prepareTxtIndex,
 } from "../libs/txtIndex";
 import { getCache } from "../libs/cache.js";
 import { beginDiagnostic, diagnosticError } from "../utils/diagnostics";
@@ -72,6 +73,34 @@ class TxtRender extends GeneralRender {
       refresh: bookLocation?.refresh === true,
     });
     try {
+      if (this.txtIndexStore?.readChapter && this.txtIndexStore.readSource) {
+        // The desktop random-access path never retains a whole-file buffer or
+        // decoded book string, including after a cold index rebuild.
+        this.txtBuffer = new ArrayBuffer(0);
+        const store = this.txtIndexStore;
+        const index = await prepareTxtIndex(
+          store,
+          this.charset,
+          this.parserRegex,
+          bookLocation?.refresh === true
+        );
+        this.book?.destroy?.();
+        this.book = makeHtmlBook(
+          "",
+          true,
+          this.parserRegex,
+          bookLocation,
+          this.diagnosticTraceId,
+          index,
+          (chapterIndex) => store.readChapter!(index.chapters[chapterIndex])
+        );
+        finish({
+          chapterCount: index.chapters.length,
+          randomAccess: true,
+          retainedSourceBytes: 0,
+        });
+        return;
+      }
       const textDecoder = new TextDecoder(this.charset);
       const bytes = new Uint8Array(this.txtBuffer);
       const decodeFinish = beginDiagnostic("TXT", "decode", {
@@ -132,6 +161,19 @@ class TxtRender extends GeneralRender {
       finish({ failed: true });
       throw error;
     }
+  }
+  removeContent() {
+    super.removeContent();
+    this.book?.destroy?.();
+    this.book = null;
+    this.chapterList = [];
+    this.chapterDocList = [];
+    this.txtBuffer = new ArrayBuffer(0);
+    this.txtIndexStore?.close?.().catch((error) => {
+      diagnosticError("TXT", "closeSource:failed", error, {
+        traceId: this.diagnosticTraceId,
+      });
+    });
   }
   async refreshContent() {
     const finish = beginDiagnostic("TXT", "refreshContent", {

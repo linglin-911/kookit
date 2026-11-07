@@ -5,17 +5,15 @@ import {
   txtToHtml,
   TxtChapterIndex,
 } from "./textProcessor";
-import {
-  beginDiagnostic,
-  diagnosticError,
-} from "../utils/diagnostics";
+import { beginDiagnostic, diagnosticError } from "../utils/diagnostics";
 export const makeHtmlBook = (
   bookStr: string,
   isTxt = false,
   parserRegex = "",
   bookLocation?: any,
   traceId?: string,
-  savedTxtIndex?: TxtChapterIndex
+  savedTxtIndex?: TxtChapterIndex,
+  loadTxtChapter?: (chapterIndex: number) => Promise<string>
 ) => {
   const finish = beginDiagnostic("TXT", "makeHtmlBook", {
     traceId: traceId || "unknown",
@@ -29,8 +27,8 @@ export const makeHtmlBook = (
       sourceCharacters: bookStr.length,
       hasSavedLocation: Boolean(
         bookLocation?.chapterDocIndex ||
-          bookLocation?.chapterTitle ||
-          bookLocation?.text
+        bookLocation?.chapterTitle ||
+        bookLocation?.text
       ),
     });
 
@@ -38,6 +36,7 @@ export const makeHtmlBook = (
       const index = savedTxtIndex || buildTxtChapterIndex(bookStr, parserRegex);
       const chapterList = index.chapters;
 
+      const urls = new Map<number, string>();
       const load = async (chapterIndex: number) => {
         const chapter = chapterList[chapterIndex];
         const loadFinish = beginDiagnostic("TXT", "loadChapterHtml", {
@@ -52,7 +51,15 @@ export const makeHtmlBook = (
             throw new Error(`TXT chapter index out of range: ${chapterIndex}`);
           }
 
-          const chapterSource = bookStr.slice(chapter.start, chapter.end);
+          const chapterSource = loadTxtChapter
+            ? await loadTxtChapter(chapterIndex)
+            : bookStr.slice(chapter.start, chapter.end);
+          if (
+            loadTxtChapter &&
+            chapterSource.length !== chapter.end - chapter.start
+          ) {
+            throw new Error("TXT chapter does not match indexed UTF-16 length");
+          }
           const chapterHtml = txtToHtml(
             chapterSource,
             parserRegex,
@@ -74,6 +81,9 @@ export const makeHtmlBook = (
           const page = URL.createObjectURL(
             new Blob([chapterHtml], { type: "text/html" })
           );
+          const previous = urls.get(chapterIndex);
+          if (previous) URL.revokeObjectURL(previous);
+          urls.set(chapterIndex, page);
           loadFinish({
             blobUrlCreated: true,
             htmlCharacters: chapterHtml.length,
@@ -96,7 +106,11 @@ export const makeHtmlBook = (
         label: item.label,
         href: "title" + item.index,
         load: () => load(item.index),
-        unload: () => {},
+        unload: () => {
+          const url = urls.get(item.index);
+          if (url) URL.revokeObjectURL(url);
+          urls.delete(item.index);
+        },
         size: item.size,
       }));
       book.toc = chapterList
@@ -105,6 +119,10 @@ export const makeHtmlBook = (
           href: "title" + item.index,
         }))
         .filter((item) => item.label !== "");
+      book.destroy = () => {
+        for (const url of urls.values()) URL.revokeObjectURL(url);
+        urls.clear();
+      };
       book.rendition = { layout: "pre-paginated" };
       book.resolveHref = (href: string) => {
         return { index: parseInt(href.substring(5, href.length)) };

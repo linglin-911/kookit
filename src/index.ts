@@ -42,3 +42,5 @@ export {
   BookHelper,
   StyleHelper,
 };
+
+export { prepareTxtIndex } from "./libs/txtIndex";

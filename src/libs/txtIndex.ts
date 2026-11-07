@@ -33,6 +33,9 @@ export interface PersistentTxtIndex extends TxtChapterIndex {
 export interface TxtIndexStore {
   load: (force: boolean) => Promise<PersistentTxtIndex | null>;
   save: (index: PersistentTxtIndex) => Promise<void>;
+  readSource?: () => Promise<Uint8Array>;
+  readChapter?: (chapter: PersistentTxtChapter) => Promise<string>;
+  close?: () => Promise<void>;
 }
 
 export const decodeTxtSource = (bytes: Uint8Array, charset = "utf-8") => {
@@ -187,4 +190,28 @@ export const buildPersistentTxtIndex = (
       };
     }),
   };
+};
+
+/** Cold rebuild data is confined to this call. Return only lightweight metadata;
+ * no decoded book string or original buffer is captured by chapter loaders.
+ * Streaming/background index construction is intentionally a later stage.
+ */
+export const prepareTxtIndex = async (
+  store: TxtIndexStore,
+  charset: string,
+  parserRegex = "",
+  force = false
+): Promise<PersistentTxtIndex> => {
+  const cached = await store.load(force);
+  if (cached) return cached;
+  if (!store.readSource) throw new Error("TXT source reader is unavailable");
+  const bytes = await store.readSource();
+  const source = decodeTxtSource(bytes, charset);
+  // V8 may retain the entire decoded string through sliced chapter titles.
+  // Clone only the lightweight metadata so every retained string has independent backing.
+  const index: PersistentTxtIndex = JSON.parse(
+    JSON.stringify(buildPersistentTxtIndex(bytes, source, parserRegex))
+  );
+  await store.save(index);
+  return index;
 };
