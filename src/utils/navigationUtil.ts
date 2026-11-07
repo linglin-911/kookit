@@ -1,4 +1,5 @@
 import ChapterDoc from "../model/chapterDoc";
+import { getChapterStartPercentage, getRecordedPercentage } from "./chapterMetrics";
 import {
   convertComputedNum,
   convertStyleNum,
@@ -599,15 +600,7 @@ export const handleRenderChapter = async (
   tempLocation.chapterTitle = chapterTitle;
   tempLocation.chapterHref = chapterHref;
   tempLocation.chapterDocIndex = chapterDocIndex + "";
-  tempLocation.percentage =
-    chapterDocList
-      .slice(0, chapterDocIndex)
-      .map((item) => (item.text ? item.text.size || 1 : 1))
-      .reduce((a, b) => a + b, 0) /
-      chapterDocList
-        .map((item) => (item.text ? item.text.size || 1 : 1))
-        .reduce((a, b) => a + b, 0) +
-    "";
+  tempLocation.percentage = getChapterStartPercentage(chapterDocList, chapterDocIndex) + "";
   tempLocation.text = "";
   tempLocation.xpath = `/body/DocFragment[${chapterDocIndex + 1}]`;
   tempLocation.timestamp = parseInt(new Date().getTime() / 1000 + "");
@@ -900,21 +893,11 @@ export const handleRecord = async (
       `/body/DocFragment[${parseInt(tempLocation.chapterDocIndex) + 1}]` +
       getXPathForNode(firstVisibleNode, doc);
     tempLocation.timestamp = parseInt(new Date().getTime() / 1000 + "");
-    let totalSize = chapterDocList
-      .map((item) => (item.text ? item.text.size || 1 : 1))
-      .reduce((a, b) => a + b, 0);
-    tempLocation.percentage =
-      chapterDocList
-        .slice(0, parseInt(tempLocation.chapterDocIndex))
-        .map((item) => (item.text ? item.text.size || 1 : 1))
-        .reduce((a, b) => a + b, 0) /
-        totalSize +
-      ((chapterDocList.find(
-        (_item, index) => index === parseInt(tempLocation.chapterDocIndex)
-      )?.text.size || 0) /
-        totalSize) *
-        (count / nodeList.length) +
-      "";
+    tempLocation.percentage = getRecordedPercentage(
+      chapterDocList,
+      parseInt(tempLocation.chapterDocIndex),
+      count / nodeList.length
+    ) + "";
   } else {
     tempLocation.page =
       (await progressInfo(readerMode, doc, element))?.currentPage + "";

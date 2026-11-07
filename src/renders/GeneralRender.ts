@@ -1,5 +1,6 @@
 ﻿import Chapter from "../model/chapter";
 import ChapterDoc from "../model/chapterDoc";
+import { flattenChapterTree, getChapterWeights, ChapterWeights } from "../utils/chapterMetrics";
 import {
   collectChapterImageUrls,
   convertStyleNum,
@@ -55,7 +56,6 @@ import {
   slideAnimateTo,
 } from "../utils/touchUtil";
 import {
-  cumulativeSumWithPrevious,
   getBlockElement,
   getSectionGap,
   isParentBlock,
@@ -113,8 +113,13 @@ class GeneralRender extends EventEmitter {
   isReadingRuler: string = "no";
   isSpeedReading: string = "no";
   isShowTotalPage: string = "no";
-  chapterSizeCache: { sizes: number[]; pages: number[]; total: number } | null =
+  chapterSizeCache: { sizes: number[]; prefix: number[]; pages: number[]; total: number } | null =
     null;
+  private chapterSizeCacheWeights: ChapterWeights | null = null;
+  private chapterSizeCachePageSize: number | null = null;
+  private chapterSizeCacheReaderMode: string | null = null;
+  private flattenedChapterSource: Chapter[] | null = null;
+  private flattenedChapterLength = 0;
   estimatedSizePerPage: number | null = null;
   speedReadingSpeed: number = 300;
   revertDirection: string = "no";
@@ -531,18 +536,13 @@ class GeneralRender extends EventEmitter {
       return null;
     }
   }
-  flatChapter(chapters: any) {
-    let newChapter: any = [];
-    for (let i = 0; i < chapters.length; i++) {
-      if (chapters[i].subitems && chapters[i].subitems.length > 0) {
-        newChapter.push(chapters[i]);
-        newChapter = newChapter.concat(this.flatChapter(chapters[i].subitems));
-      } else {
-        newChapter.push(chapters[i]);
-      }
+  flatChapter(chapters: Chapter[]): Chapter[] {
+    if (this.flattenedChapterSource !== chapters || this.flattenedChapterLength !== chapters.length) {
+      this.flattenChapters = flattenChapterTree(chapters);
+      this.flattenedChapterSource = chapters;
+      this.flattenedChapterLength = chapters.length;
     }
-    this.flattenChapters = newChapter;
-    return newChapter;
+    return this.flattenChapters;
   }
   getChapter() {
     return this.chapterList;
@@ -1325,23 +1325,32 @@ class GeneralRender extends EventEmitter {
     }
   }
   getChapterSizes() {
-    if (this.chapterSizeCache) return this.chapterSizeCache;
     if (!this.estimatedSizePerPage) {
-      return { sizes: [], total: 0, pages: [] };
+      this.chapterSizeCache = null;
+      return { sizes: [], prefix: [], total: 0, pages: [] };
     }
-    const sizes = this.chapterDocList.map((item) =>
-      item?.text ? item.text.size || item.text.length || 1 : 1
-    );
-    //get total pages for each chapter
-    const sizeList = cumulativeSumWithPrevious(sizes);
+    const weights = getChapterWeights(this.chapterDocList, "pages");
+    const pageSize = this.getEstimatedSizePerPage();
+    if (this.chapterSizeCache && this.chapterSizeCacheWeights === weights &&
+        this.chapterSizeCachePageSize === pageSize && this.chapterSizeCacheReaderMode === this.readerMode) {
+      return this.chapterSizeCache;
+    }
+    const finish = beginDiagnostic("Reader", "buildChapterPages", {
+      traceId: this.diagnosticTraceId,
+      chapterCount: this.chapterDocList.length,
+    });
+    const { sizes, prefix: sizeList, total } = weights;
     const pages = sizeList.map(
       (size) =>
-        Math.round(size / this.getEstimatedSizePerPage()) *
+        Math.round(size / pageSize) *
           (this.readerMode === "double" ? 2 : 1) +
         1
     );
-    const total = sizes.reduce((a, b) => a + b, 0);
-    this.chapterSizeCache = { sizes, total, pages };
+    this.chapterSizeCache = { sizes, prefix: sizeList, total, pages };
+    this.chapterSizeCacheWeights = weights;
+    this.chapterSizeCachePageSize = pageSize;
+    this.chapterSizeCacheReaderMode = this.readerMode;
+    finish({ totalWeight: total });
     this.trigger("chapter-pages");
     return this.chapterSizeCache;
   }
@@ -1458,7 +1467,7 @@ class GeneralRender extends EventEmitter {
   }
   getPages() {
     if (this.chapterSizeCache) {
-      const { pages } = this.chapterSizeCache;
+      const { pages } = this.getChapterSizes();
       return pages;
     }
     return [];

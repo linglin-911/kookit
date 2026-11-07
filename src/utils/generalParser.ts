@@ -1,5 +1,7 @@
 import Chapter from "../model/chapter";
 import ChapterDoc from "../model/chapterDoc";
+import { beginDiagnostic } from "./diagnostics";
+import { flattenChapterTree } from "./chapterMetrics";
 const isString = (value: any): boolean => {
   return typeof value === "string" || value instanceof String;
 };
@@ -72,35 +74,31 @@ class GeneralParser {
     return this.chapterList;
   }
   async getChapterDoc() {
-    const chapterIndexList = this.flattenChapters.map((item) => item.index);
-    return this.book.sections.map((item: any, index: number) => {
-      if (chapterIndexList.indexOf(index) > -1) {
-        return {
-          label: this.flattenChapters[chapterIndexList.indexOf(index)].label,
-          href: this.flattenChapters[chapterIndexList.indexOf(index)].href,
-          text: item,
-        };
-      } else {
-        return {
-          label: "",
-          href: "",
-          text: item,
-        };
-      }
-    }) as ChapterDoc[];
-  }
-
-  flatChapter(chapters: any) {
-    let newChapter: any = [];
-    for (let i = 0; i < chapters.length; i++) {
-      if (chapters[i].subitems && chapters[i].subitems.length > 0) {
-        newChapter.push(chapters[i]);
-        newChapter = newChapter.concat(this.flatChapter(chapters[i].subitems));
-      } else {
-        newChapter.push(chapters[i]);
+    const finish = beginDiagnostic("Reader", "mapChapterDocuments", {
+      sectionCount: this.book.sections.length,
+      chapterCount: this.flattenChapters.length,
+    });
+    const chaptersByIndex = new Map<number, Chapter>();
+    for (const chapter of this.flattenChapters) {
+      // indexOf previously selected the first TOC entry for a shared section.
+      if (!chaptersByIndex.has(chapter.index)) {
+        chaptersByIndex.set(chapter.index, chapter);
       }
     }
-    return newChapter;
+    const documents = this.book.sections.map((item: ChapterDoc["text"], index: number) => {
+      const chapter = chaptersByIndex.get(index);
+      return {
+        label: chapter?.label ?? "",
+        href: chapter?.href ?? "",
+        text: item,
+      };
+    }) as ChapterDoc[];
+    finish({ documentCount: documents.length });
+    return documents;
+  }
+
+  flatChapter(chapters: Chapter[]): Chapter[] {
+    return flattenChapterTree(chapters);
   }
 
   getMetadata() {
