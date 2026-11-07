@@ -393,7 +393,7 @@ export const buildTxtChapterIndex = (
   text: string,
   parserRegex: string = ""
 ): TxtChapterIndex => {
-  const finish = beginDiagnostic("TXT", "buildChapterIndex", {
+  const finish = beginDiagnostic("TXT", "scanChapterIndex", {
     textCharacters: text.length,
   });
 
@@ -646,7 +646,7 @@ export const buildTxtChapterIndex = (
       mode: "fixed-500-lines",
     };
   } catch (error) {
-    diagnosticError("TXT", "buildChapterIndex:failed", error, {
+    diagnosticError("TXT", "scanChapterIndex:failed", error, {
       textCharacters: text.length,
     });
     finish({ failed: true });
