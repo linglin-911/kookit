@@ -24,6 +24,8 @@ class GeneralParser {
   }
   unescapeHtml(htmlStr: string): string {
     if (!htmlStr) return "";
+    // Plain TXT chapter labels need no DOMParser; retain HTML decoding for markup/entities.
+    if (!/[<&]/.test(htmlStr)) return htmlStr;
     const doc = new DOMParser().parseFromString(htmlStr, "text/html");
     return doc.documentElement.textContent || "";
   }
@@ -43,10 +45,9 @@ class GeneralParser {
             console.error(error);
           }
 
+          const label = this.unescapeHtml(item.label);
           return {
-            label: this.unescapeHtml(item.label)
-              ? this.unescapeHtml(item.label)
-              : chapterIndex + "",
+            label: label || chapterIndex + "",
             href: item.href ? item.href : "title" + chapterIndex,
             index: chapterIndex,
             subitems: item.subitems ? await this.getChapter(item.subitems) : [],
@@ -56,11 +57,9 @@ class GeneralParser {
     } else {
       this.chapterList = await Promise.all<Chapter>(
         this.book.sections.map(async (item, index) => {
+          const label = item && item.label ? this.unescapeHtml(item.label) : "";
           return {
-            label:
-              item && item.label && this.unescapeHtml(item.label)
-                ? this.unescapeHtml(item.label)
-                : index + "",
+            label: label || index + "",
             href: item && item.href ? item.href : "title" + index,
             index: index,
             subitems:
@@ -77,9 +76,7 @@ class GeneralParser {
     return this.book.sections.map((item: any, index: number) => {
       if (chapterIndexList.indexOf(index) > -1) {
         return {
-          label: this.unescapeHtml(
-            this.flattenChapters[chapterIndexList.indexOf(index)].label
-          ),
+          label: this.flattenChapters[chapterIndexList.indexOf(index)].label,
           href: this.flattenChapters[chapterIndexList.indexOf(index)].href,
           text: item,
         };

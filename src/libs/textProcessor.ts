@@ -1,4 +1,4 @@
-import { beginDiagnostic, diagnosticLog } from "../utils/diagnostics";
+import { beginDiagnostic, diagnosticError, diagnosticLog } from "../utils/diagnostics";
 
 let keywords = [
   "章",
@@ -113,6 +113,7 @@ export const txtToHtml = (
     textCharacters: text.length,
     refresh: bookLocation?.refresh === true,
     noTitle: bookLocation?.noTitle === true,
+    noFallback: bookLocation?.noFallback === true,
   });
   const splitFinish = beginDiagnostic("TXT", "splitLines", {
     traceId: traceId || "unknown",
@@ -137,6 +138,10 @@ export const txtToHtml = (
   if (bookLocation && bookLocation.noTitle) {
     noTitle = true;
   }
+  const noFallback = bookLocation?.noFallback === true;
+  const chapterOffset = Number.isFinite(Number(bookLocation?.chapterOffset))
+    ? Number(bookLocation.chapterOffset)
+    : 0;
   if (noTitle) {
     diagnosticLog("info", "TXT", "conversionMode", {
       traceId: traceId || "unknown",
@@ -152,7 +157,7 @@ export const txtToHtml = (
     }
     for (let i = 0; i < lines.length; i += 500) {
       const chapterLines = lines.slice(i, i + 500);
-      htmlParts.push(`<h1 class="hide">Chapter ${chapterIndex}</h1>`); // Push chapter title to array
+      htmlParts.push(`<h1 class="hide">Chapter ${chapterOffset + chapterIndex}</h1>`); // Push chapter title to array
       chapterLines.forEach((line) => {
         if (line.trim() === "") {
           htmlParts.push(`<p class="hide">${line}</p>`); // Push line break for empty lines
@@ -309,7 +314,7 @@ export const txtToHtml = (
   // Join the array at the end
   const finalHtml = htmlParts.join("");
 
-  if (finalHtml && finalHtml.includes("<h1")) {
+  if (noFallback || (finalHtml && finalHtml.includes("<h1"))) {
     finish({
       lineCount: lines.length,
       htmlCharacters: finalHtml.length,
@@ -354,6 +359,292 @@ export const isTitle = (line: any, parserRegex: string = "") => {
         line.lastIndexOf("第") < 7 &&
         startWithDI(line.substr(line.indexOf("第")))))
   );
+};
+
+export interface TxtChapterIndexEntry {
+  index: number;
+  label: string;
+  start: number;
+  end: number;
+  lineCount: number;
+  size: number;
+  hasTitle: boolean;
+  fixedChunk: boolean;
+}
+
+export interface TxtChapterIndex {
+  chapters: TxtChapterIndexEntry[];
+  lineCount: number;
+  mode: "chapter-headings" | "fixed-500-lines";
+}
+
+/**
+ * Build a complete TXT chapter index without creating the full-book HTML or DOM.
+ * Offsets use JavaScript string indices so each section can be sliced lazily later.
+ */
+export const buildTxtChapterIndex = (
+  text: string,
+  parserRegex: string = ""
+): TxtChapterIndex => {
+  const finish = beginDiagnostic("TXT", "buildChapterIndex", {
+    textCharacters: text.length,
+  });
+
+  try {
+    // Match txtToHtml's line splitting: prefer LF, and use CR only for CR-only files.
+    const separator = text.includes("\n") ? "\n" : "\r";
+    const getLineBounds = (start: number) => {
+      const separatorIndex = text.indexOf(separator, start);
+      return {
+        end: separatorIndex === -1 ? text.length : separatorIndex,
+        next: separatorIndex === -1 ? -1 : separatorIndex + 1,
+      };
+    };
+
+    // txtToHtml discards leading blank lines before parsing.
+    let contentStart = 0;
+    while (contentStart <= text.length) {
+      const bounds = getLineBounds(contentStart);
+      if (text.slice(contentStart, bounds.end).trim() !== "") {
+        break;
+      }
+      if (bounds.next === -1) {
+        contentStart = text.length;
+        break;
+      }
+      contentStart = bounds.next;
+    }
+
+    const headings: Array<{
+      start: number;
+      lineIndex: number;
+      title: string;
+    }> = [];
+    const fallbackLineStarts: number[] = [];
+    const titleRegex = parserRegex ? new RegExp(parserRegex) : null;
+    const matchesTitle = (line: string): boolean => {
+      if (titleRegex) {
+        // isTitle() creates a fresh RegExp for each line; reset lastIndex to
+        // preserve that behavior even when the configured pattern has g/y flags.
+        titleRegex.lastIndex = 0;
+        return titleRegex.test(line);
+      }
+      return isTitle(line);
+    };
+
+    let lineStart = contentStart;
+    let lineCount = 0;
+    let pendingHeading: {
+      start: number;
+      lineIndex: number;
+      title: string;
+    } | null = null;
+    let hasContentSinceHeading = false;
+
+    // Scan line-by-line without allocating a 300k+ element split("\n") array.
+    while (contentStart < text.length && lineStart <= text.length) {
+      if (lineCount % 500 === 0) {
+        fallbackLineStarts.push(lineStart);
+      }
+
+      const bounds = getLineBounds(lineStart);
+      const line = text.slice(lineStart, bounds.end);
+      if (line && matchesTitle(line)) {
+        // A heading with no non-empty body before the next heading is plain text,
+        // matching txtToHtml's existing "empty chapter heading" behavior.
+        if (pendingHeading && hasContentSinceHeading) {
+          headings.push(pendingHeading);
+        }
+        pendingHeading = {
+          start: lineStart,
+          lineIndex: lineCount,
+          title: line,
+        };
+        hasContentSinceHeading = false;
+      } else if (pendingHeading && line.trim() !== "") {
+        hasContentSinceHeading = true;
+      }
+
+      lineCount += 1;
+      if (bounds.next === -1) {
+        break;
+      }
+      lineStart = bounds.next;
+    }
+
+    if (pendingHeading && hasContentSinceHeading) {
+      headings.push(pendingHeading);
+    }
+
+    const estimateSectionSize = (
+      start: number,
+      end: number,
+      sectionLineCount: number,
+      hasTitle: boolean,
+      label: string,
+      fixedChunk: boolean
+    ) => {
+      // Estimate the former HTML-based progress weight without retaining generated HTML.
+      const textCharacters = Math.max(
+        0,
+        end - start - Math.max(0, sectionLineCount - 1)
+      );
+      const headingOverhead = hasTitle ? 2 : 0;
+      const fixedHeadingOverhead = fixedChunk ? 22 + label.length : 0;
+      return Math.max(
+        1,
+        textCharacters +
+          sectionLineCount * 7 +
+          headingOverhead +
+          fixedHeadingOverhead
+      );
+    };
+
+    const chapters: TxtChapterIndexEntry[] = [];
+
+    if (headings.length > 0) {
+      const firstHeading = headings[0];
+      if (firstHeading.start > contentStart) {
+        const start = contentStart;
+        const end = Math.max(start, firstHeading.start - 1);
+        const preambleLineCount = firstHeading.lineIndex;
+        if (text.slice(start, end).trim() !== "") {
+          const label = "";
+          chapters.push({
+            index: chapters.length,
+            label,
+            start,
+            end,
+            lineCount: preambleLineCount,
+            size: estimateSectionSize(
+              start,
+              end,
+              preambleLineCount,
+              false,
+              label,
+              false
+            ),
+            hasTitle: false,
+            fixedChunk: false,
+          });
+        }
+      }
+
+      headings.forEach((heading, headingIndex) => {
+        const nextHeading = headings[headingIndex + 1];
+        const start = heading.start;
+        const end = nextHeading
+          ? Math.max(start, nextHeading.start - 1)
+          : text.length;
+        const sectionLineCount = nextHeading
+          ? nextHeading.lineIndex - heading.lineIndex
+          : lineCount - heading.lineIndex;
+        const label = heading.title.trim();
+        chapters.push({
+          index: chapters.length,
+          label,
+          start,
+          end,
+          lineCount: sectionLineCount,
+          size: estimateSectionSize(
+            start,
+            end,
+            sectionLineCount,
+            true,
+            label,
+            false
+          ),
+          hasTitle: true,
+          fixedChunk: false,
+        });
+      });
+
+      finish({
+        mode: "chapter-headings",
+        lineCount,
+        chapterCount: chapters.length,
+        detectedHeadingCount: headings.length,
+        fullBookHtmlGenerated: false,
+        fullBookDomParsed: false,
+      });
+      return {
+        chapters,
+        lineCount,
+        mode: "chapter-headings",
+      };
+    }
+
+    // Preserve the existing 500-line fallback when no valid heading has body text.
+    if (lineCount === 0) {
+      const label = "Chapter 0";
+      chapters.push({
+        index: 0,
+        label,
+        start: contentStart,
+        end: text.length,
+        lineCount: 0,
+        size: estimateSectionSize(
+          contentStart,
+          text.length,
+          0,
+          false,
+          label,
+          true
+        ),
+        hasTitle: false,
+        fixedChunk: true,
+      });
+    } else {
+      fallbackLineStarts.forEach((start, chunkIndex) => {
+        const nextStart = fallbackLineStarts[chunkIndex + 1];
+        const end = nextStart
+          ? Math.max(start, nextStart - 1)
+          : text.length;
+        const sectionLineCount = Math.min(
+          500,
+          lineCount - chunkIndex * 500
+        );
+        const label = "Chapter " + chunkIndex;
+        chapters.push({
+          index: chunkIndex,
+          label,
+          start,
+          end,
+          lineCount: sectionLineCount,
+          size: estimateSectionSize(
+            start,
+            end,
+            sectionLineCount,
+            false,
+            label,
+            true
+          ),
+          hasTitle: false,
+          fixedChunk: true,
+        });
+      });
+    }
+
+    finish({
+      mode: "fixed-500-lines",
+      lineCount,
+      chapterCount: chapters.length,
+      detectedHeadingCount: 0,
+      fullBookHtmlGenerated: false,
+      fullBookDomParsed: false,
+    });
+    return {
+      chapters,
+      lineCount,
+      mode: "fixed-500-lines",
+    };
+  } catch (error) {
+    diagnosticError("TXT", "buildChapterIndex:failed", error, {
+      textCharacters: text.length,
+    });
+    finish({ failed: true });
+    throw error;
+  }
 };
 
 const isContain = (line: string) => {

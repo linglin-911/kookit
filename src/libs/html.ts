@@ -1,4 +1,9 @@
-import { cleanText, isTitle, txtToHtml } from "./textProcessor";
+import {
+  buildTxtChapterIndex,
+  cleanText,
+  isTitle,
+  txtToHtml,
+} from "./textProcessor";
 import {
   beginDiagnostic,
   diagnosticError,
@@ -15,12 +20,124 @@ export const makeHtmlBook = (
     sourceCharacters: bookStr.length,
     isTxt,
   });
+
+  if (isTxt) {
+    const indexFinish = beginDiagnostic("TXT", "buildLazyChapterIndex", {
+      traceId: traceId || "unknown",
+      sourceCharacters: bookStr.length,
+      hasSavedLocation: Boolean(
+        bookLocation?.chapterDocIndex ||
+          bookLocation?.chapterTitle ||
+          bookLocation?.text
+      ),
+    });
+
+    try {
+      const index = buildTxtChapterIndex(bookStr, parserRegex);
+      const chapterList = index.chapters;
+
+      const load = async (chapterIndex: number) => {
+        const chapter = chapterList[chapterIndex];
+        const loadFinish = beginDiagnostic("TXT", "loadChapterHtml", {
+          traceId: traceId || "unknown",
+          chapterIndex,
+          sourceCharacters: chapter ? chapter.end - chapter.start : 0,
+          indexMode: index.mode,
+        });
+
+        try {
+          if (!chapter) {
+            throw new Error(`TXT chapter index out of range: ${chapterIndex}`);
+          }
+
+          const chapterSource = bookStr.slice(chapter.start, chapter.end);
+          const chapterHtml = txtToHtml(
+            chapterSource,
+            parserRegex,
+            chapter.fixedChunk
+              ? {
+                  noTitle: true,
+                  noFallback: true,
+                  chapterOffset: chapter.index,
+                }
+              : {
+                  refresh: true,
+                  noFallback: true,
+                },
+            traceId
+          );
+          const page = URL.createObjectURL(
+            new Blob([chapterHtml], { type: "text/html" })
+          );
+          loadFinish({
+            blobUrlCreated: true,
+            htmlCharacters: chapterHtml.length,
+          });
+          return page;
+        } catch (error) {
+          diagnosticError("TXT", "loadChapterHtml:failed", error, {
+            traceId: traceId || "unknown",
+            chapterIndex,
+          });
+          loadFinish({ failed: true });
+          throw error;
+        }
+      };
+
+      const book: any = {};
+      book.getCover = () => "";
+      book.sections = chapterList.map((item) => ({
+        id: item.index,
+        label: item.label,
+        href: "title" + item.index,
+        load: () => load(item.index),
+        unload: () => {},
+        size: item.size,
+      }));
+      book.toc = chapterList
+        .map((item) => ({
+          label: item.label,
+          href: "title" + item.index,
+        }))
+        .filter((item) => item.label !== "");
+      book.rendition = { layout: "pre-paginated" };
+      book.resolveHref = (href: string) => {
+        return { index: parseInt(href.substring(5, href.length)) };
+      };
+      book.resolveHrefIndex = (href: string) => {
+        return { index: parseInt(href.substring(5, href.length)) };
+      };
+      book.splitTOCHref = (href) => [href, null];
+      book.getTOCFragment = (doc) => doc.documentElement;
+
+      indexFinish({
+        mode: index.mode,
+        lineCount: index.lineCount,
+        chapterCount: chapterList.length,
+        fullBookHtmlGenerated: false,
+        fullBookDomParsed: false,
+      });
+      finish({
+        mode: "lazy-chapter-index",
+        lineCount: index.lineCount,
+        chapterCount: chapterList.length,
+      });
+      return book;
+    } catch (error) {
+      diagnosticError("TXT", "makeHtmlBook:index-failed", error, {
+        traceId: traceId || "unknown",
+        sourceCharacters: bookStr.length,
+      });
+      indexFinish({ failed: true });
+      finish({ failed: true });
+      throw error;
+    }
+  }
+
   const htmlFinish = beginDiagnostic("TXT", "buildHtml", {
     traceId: traceId || "unknown",
   });
-  const html = isTxt
-    ? txtToHtml(bookStr, parserRegex, bookLocation, traceId)
-    : bookStr;
+  const html = bookStr;
   htmlFinish({ htmlCharacters: html.length });
   const domFinish = beginDiagnostic("TXT", "parseHtmlDom", {
     traceId: traceId || "unknown",
