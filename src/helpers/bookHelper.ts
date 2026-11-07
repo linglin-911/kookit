@@ -1,3 +1,4 @@
+import type { TxtIndexStore } from "../libs/txtIndex";
 import Book from "../model/Book";
 declare var window: any;
 
@@ -50,6 +51,7 @@ class BookHelper {
       format: string;
       readerMode: string;
       charset: string;
+      txtIndexStore?: TxtIndexStore;
       animation: string;
       convertChinese: string;
       parserRegex: string;

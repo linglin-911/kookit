@@ -3,6 +3,7 @@ import {
   cleanText,
   isTitle,
   txtToHtml,
+  TxtChapterIndex,
 } from "./textProcessor";
 import {
   beginDiagnostic,
@@ -13,7 +14,8 @@ export const makeHtmlBook = (
   isTxt = false,
   parserRegex = "",
   bookLocation?: any,
-  traceId?: string
+  traceId?: string,
+  savedTxtIndex?: TxtChapterIndex
 ) => {
   const finish = beginDiagnostic("TXT", "makeHtmlBook", {
     traceId: traceId || "unknown",
@@ -33,7 +35,7 @@ export const makeHtmlBook = (
     });
 
     try {
-      const index = buildTxtChapterIndex(bookStr, parserRegex);
+      const index = savedTxtIndex || buildTxtChapterIndex(bookStr, parserRegex);
       const chapterList = index.chapters;
 
       const load = async (chapterIndex: number) => {
@@ -115,6 +117,7 @@ export const makeHtmlBook = (
 
       indexFinish({
         mode: index.mode,
+        persistentIndexProvided: Boolean(savedTxtIndex),
         lineCount: index.lineCount,
         chapterCount: chapterList.length,
         fullBookHtmlGenerated: false,

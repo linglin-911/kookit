@@ -3,21 +3,25 @@ import GeneralRender from "./GeneralRender";
 import { makeHtmlBook } from "../libs/html";
 import GeneralParser from "../utils/generalParser";
 import chardet from "chardet";
-import { getCache } from "../libs/cache.js";
 import {
-  beginDiagnostic,
-  diagnosticError,
-} from "../utils/diagnostics";
+  decodeTxtSource,
+  buildPersistentTxtIndex,
+  TxtIndexStore,
+} from "../libs/txtIndex";
+import { getCache } from "../libs/cache.js";
+import { beginDiagnostic, diagnosticError } from "../utils/diagnostics";
 
 class TxtRender extends GeneralRender {
   txtBuffer: ArrayBuffer;
   charset: string;
   parserRegex: string;
+  txtIndexStore?: TxtIndexStore;
   constructor(txtBuffer: ArrayBuffer, config: any) {
     super({ ...config, format: "TXT" });
     this.txtBuffer = txtBuffer;
     this.charset = config.charset;
     this.parserRegex = config.parserRegex;
+    this.txtIndexStore = config.txtIndexStore;
   }
   async renderTo(element: HTMLElement, bookLocation?: any): Promise<void> {
     const finish = beginDiagnostic("TXT", "renderTo", {
@@ -42,7 +46,9 @@ class TxtRender extends GeneralRender {
       createIframe(element, this.isAllowScript);
       const doc = this.getDocument();
       if (!doc) {
-        throw new Error("TXT reader iframe document is unavailable after creation");
+        throw new Error(
+          "TXT reader iframe document is unavailable after creation"
+        );
       }
       handleLayout(element, this.readerMode, doc);
       finish({
@@ -73,14 +79,49 @@ class TxtRender extends GeneralRender {
         bufferBytes: bytes.byteLength,
         charset: this.charset || "default",
       });
-      const text = textDecoder.decode(bytes);
-      decodeFinish({ textCharacters: text.length });
+      // Phase 2 deliberately retains whole-file decode. Only chapter scanning is
+      // eliminated on a persistent cache hit; random body reads belong to phase 3.
+      const source = this.txtIndexStore
+        ? decodeTxtSource(bytes, this.charset)
+        : null;
+      const text = source ? source.text : textDecoder.decode(bytes);
+      decodeFinish({
+        textCharacters: text.length,
+        transitionWholeFileDecode: Boolean(source),
+      });
+      const persistentFinish = beginDiagnostic(
+        "TXT",
+        "persistentChapterIndex",
+        {
+          traceId: this.diagnosticTraceId,
+        }
+      );
+      let index = this.txtIndexStore
+        ? await this.txtIndexStore.load(bookLocation?.refresh === true)
+        : null;
+      const cacheHit = Boolean(index);
+      if (source && this.txtIndexStore && !index) {
+        index = buildPersistentTxtIndex(bytes, source, this.parserRegex);
+        await this.txtIndexStore.save(index);
+      }
+      if (
+        index &&
+        (index.textLength !== text.length || index.byteLength !== bytes.length)
+      ) {
+        throw new Error("TXT snapshot does not match the persistent index");
+      }
+      persistentFinish({
+        enabled: Boolean(this.txtIndexStore),
+        cacheHit,
+        chapterCount: index?.chapters.length || 0,
+      });
       this.book = makeHtmlBook(
         text,
         true,
         this.parserRegex,
         bookLocation,
-        this.diagnosticTraceId
+        this.diagnosticTraceId,
+        index || undefined
       );
       finish({ textCharacters: text.length });
     } catch (error) {
