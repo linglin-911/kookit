@@ -8,15 +8,17 @@ yarn clean        # 清理 build/dist/docs 目录
 
 **构建输出目标**（在 `rollup.config.js` 中硬编码为本地路径）：
 
-- 桌面版 ES 模块 → `D:\Project\koodo-reader\src\assets\lib\kookit.min.js`
-- 移动版 UMD → `D:\Project\koodo-reader-expo\assets\lib\kookit.min.txt`
-- 移动版 ES 模块 → `D:\Project\koodo-reader-expo\assets\lib\kookit-mobile.min.js`
+- 桌面版 ES 模块 → `D:\\Project\\koodo-reader\\src\\assets\\lib\\kookit.min.js`
+- 移动版 UMD → `D:\\Project\\koodo-reader-expo\\assets\\lib\\kookit.min.txt`
+- 移动版 ES 模块 → `D:\\Project\\koodo-reader-expo\\assets\\lib\\kookit-mobile.min.js`
 
 无测试框架，无 CI/CD。
 
 ## 重要规则
 
-**禁止主动提交代码**：任何情况下不得使用 `git commit`、`git push` 等命令提交或推送代码。用户必须自行执行 git 操作。
+**允许 Agent 主动提交代码**：当用户已明确委托 Agent 负责项目开发时，完成修改、检查差异并运行适用验证后，应主动将本次任务相关改动提交到当前工作分支，无需逐次询问用户。提交范围仅限本次任务相关文件，不得混入无关文件或用户已有改动。
+
+**提交与推送边界**：默认只在当前工作分支创建提交；不得 force push、重写提交历史、删除分支或直接推送到主分支。若工作环境只能通过 GitHub API 操作，允许将新提交更新到当前指定工作分支；必须以最新分支头为父提交并使用非强制更新。若分支已被他人推进，先重新获取并审查差异，不得覆盖。
 
 ## 架构概览
 
