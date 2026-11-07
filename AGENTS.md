@@ -8,9 +8,9 @@ yarn clean        # 清理 build/dist/docs 目录
 
 **构建输出目标**（在 `rollup.config.js` 中硬编码为本地路径）：
 
-- 桌面版 ES 模块 → `D:\Project\\koodo-reader\\src\\assets\\lib\\kookit.min.js`
-- 移动版 UMD → `D:\Project\\koodo-reader-expo\\assets\\lib\\kookit.min.txt`
-- 移动版 ES 模块 → `D:\Project\\koodo-reader-expo\\assets\\lib\\kookit-mobile.min.js`
+- 桌面版 ES 模块 → `D:\Project\koodo-reader\src\assets\lib\kookit.min.js`
+- 移动版 UMD → `D:\Project\koodo-reader-expo\assets\lib\kookit.min.txt`
+- 移动版 ES 模块 → `D:\Project\koodo-reader-expo\assets\lib\kookit-mobile.min.js`
 
 无测试框架，无 CI/CD。
 
