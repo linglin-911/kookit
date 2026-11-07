@@ -114,6 +114,8 @@ export const txtToHtml = (
     refresh: bookLocation?.refresh === true,
     noTitle: bookLocation?.noTitle === true,
     noFallback: bookLocation?.noFallback === true,
+    preserveLeadingBlankLines: bookLocation?.preserveLeadingBlankLines === true,
+    chapterSection: bookLocation?.chapterSection === true,
   });
   const splitFinish = beginDiagnostic("TXT", "splitLines", {
     traceId: traceId || "unknown",
@@ -124,9 +126,12 @@ export const txtToHtml = (
     lines = text.split("\r");
   }
   splitFinish({ lineCount: lines.length });
-  // 丢弃文件开头的纯空白行，避免空白内容脱离第一个章节标题单独成章
-  while (lines.length > 0 && lines[0].trim() === "") {
-    lines.shift();
+  // 普通整书解析只丢弃文件开头的空白行；固定 500 行分块的后续章节
+  // 必须保留块首空行，避免切块后丢失原文内容。
+  if (bookLocation?.preserveLeadingBlankLines !== true) {
+    while (lines.length > 0 && lines[0].trim() === "") {
+      lines.shift();
+    }
   }
 
   const htmlParts: string[] = []; // Use an array to store HTML parts
@@ -146,13 +151,14 @@ export const txtToHtml = (
     diagnosticLog("info", "TXT", "conversionMode", {
       traceId: traceId || "unknown",
       mode: "fixed-500-lines",
+      scope: bookLocation?.chapterSection === true ? "chapter" : "book",
       lineCount: lines.length,
     });
     //分章方式改成每500行分一章，且不进行标题识别
     let chapterIndex = 0;
     if (lines.length === 0) {
       // 纯空白行文件，避免生成空 HTML 导致 noTitle 兜底无限递归
-      htmlParts.push(`<h1 class="hide">Chapter 0</h1>`);
+      htmlParts.push(`<h1 class="hide">Chapter ${chapterOffset}</h1>`);
       chapterIndex = 1;
     }
     for (let i = 0; i < lines.length; i += 500) {
@@ -275,6 +281,7 @@ export const txtToHtml = (
     diagnosticLog("info", "TXT", "conversionMode", {
       traceId: traceId || "unknown",
       mode: "full-file",
+      scope: bookLocation?.chapterSection === true ? "chapter" : "book",
       lineCount: lines.length,
       refresh: isRefresh,
     });

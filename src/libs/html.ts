@@ -59,10 +59,13 @@ export const makeHtmlBook = (
                   noTitle: true,
                   noFallback: true,
                   chapterOffset: chapter.index,
+                  preserveLeadingBlankLines: chapter.index > 0,
+                  chapterSection: true,
                 }
               : {
                   refresh: true,
                   noFallback: true,
+                  chapterSection: true,
                 },
             traceId
           );

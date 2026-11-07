@@ -124,6 +124,31 @@ test("supports CRLF and CR-only line endings", () => {
   );
 });
 
+
+test("preserves leading blank lines at the start of later fixed-size chunks", () => {
+  const lines = Array.from(
+    { length: 501 },
+    (_, index) => "普通内容" + index
+  );
+  lines[500] = "";
+  const sourceText = lines.join("\n");
+  const result = buildTxtChapterIndex(sourceText);
+  const secondChunk = sourceText.slice(
+    result.chapters[1].start,
+    result.chapters[1].end
+  );
+  const html = txtToHtml(secondChunk, "", {
+    noTitle: true,
+    noFallback: true,
+    chapterOffset: 1,
+    preserveLeadingBlankLines: true,
+    chapterSection: true,
+  });
+
+  assert.match(html, /<p class="hide"><\/p>/);
+  assert.match(html, /Chapter 1/);
+});
+
 test("returns one fallback chapter for an empty or all-blank file", () => {
   const empty = buildTxtChapterIndex("");
   const blank = buildTxtChapterIndex("\n \n\t");
