@@ -847,14 +847,14 @@ class PdfRender extends GeneralRender {
     });
     return { page: pageIndex, coords: selected, readerMode: this.readerMode };
   }
-  async renderHighlighters(notes: any[], handleNoteClick: any) {
-    if (notes.length === 0) return;
-    notes = notes.reverse();
-    let chapterIndex = notes[0].chapterIndex;
+  async renderHighlighters(notes: any[], handleNoteClick: any, requestedChapterIndex?: number) {
+    notes = [...notes].reverse();
+    const chapterIndex = notes[0]?.chapterIndex ?? requestedChapterIndex ?? Number(this.tempLocation?.chapterDocIndex || 0);
     let subIframe = this.getSubIframe(chapterIndex);
     let subDoc = this.getSubDocument(chapterIndex);
     if (!subDoc || !subIframe) return;
     clearHighlight(subDoc);
+    if (notes.length === 0) return;
     let iWin: any =
       subIframe.contentWindow || subIframe.contentDocument?.defaultView;
     for (let index = 0; index < notes.length; index++) {
