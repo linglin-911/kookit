@@ -1,3 +1,6 @@
+import { resolveLegacyTxtPosition, searchTxtWindow, escapeTxtPattern } from "../utils/txtWindowText";
+import { TxtWindowHighlights, WindowNote } from "../utils/txtWindowHighlights";
+import { selectedWindowAnchor, windowRange, windowPoint } from "../libs/txtWindowAnchors";
 import { TxtWindowManager } from "../utils/txtWindowManager";
 import type { PersistentTxtIndex } from "../libs/txtIndex";
 import { selectedTxtAnchor, txtRange } from "../libs/txtAnchors";
@@ -20,8 +23,21 @@ import { beginDiagnostic, diagnosticError } from "../utils/diagnostics";
 class TxtRender extends GeneralRender {
   txtWindow?: TxtWindowManager;
   private continuousScroll: boolean;
+  private windowHighlights?: TxtWindowHighlights;
+  private windowNotes: WindowNote[] = [];
+  private relatedAnnotations: unknown[] = [];
+  setTxtRelatedAnnotations(rows:unknown[]) { this.relatedAnnotations=rows; }
+  getTxtRelatedAnnotations() { return this.relatedAnnotations; }
+  private windowClick: (event: Event) => void = () => {};
+  private searchVersion = 0;
+  private navigationVersion = 0;
+  searchHasMore = false;
+  private audioBatch?: { chapter: number; start: number; end: number; text: string; cursor: number; positions?:number[] };
+  private audioNext?: {chapter:number;offset:number};
+  private auxiliaryHighlights = new Set<string>();
   private onTxtWindowPosition?: (position: Record<string, unknown>) => void;
   private txtIndex?: PersistentTxtIndex;
+  private txtChapterById = new Map<string,PersistentTxtChapter>();
   private txtGeneration: string | null = null;
   txtBuffer: ArrayBuffer;
   charset: string;
@@ -34,7 +50,12 @@ class TxtRender extends GeneralRender {
     this.parserRegex = config.parserRegex;
     this.txtIndexStore = config.txtIndexStore;
     this.onTxtWindowPosition = config.onTxtWindowPosition;
-    this.continuousScroll = config.txtContinuousScroll === true && config.readerMode === "scroll";
+    // Transforming/assisted reading keeps its established rendering path until
+    // it has an equivalent source map; never silently ignore a reader setting.
+    this.continuousScroll = config.txtContinuousScroll === true && this.readerMode === "scroll" &&
+      !["Simplified To Traditional","Traditional To Simplified"].includes(config.convertChinese) &&
+      !config.textRules?.length && config.isBionic !== "yes" && config.textOrientation !== "vertical" &&
+      !["both","target"].includes(config.fullTranslationMode);
   }
   async renderTo(element: HTMLElement, bookLocation?: any): Promise<void> {
     const finish = beginDiagnostic("TXT", "renderTo", {
@@ -66,15 +87,22 @@ class TxtRender extends GeneralRender {
       handleLayout(element, this.readerMode, doc);
       if (this.continuousScroll && this.txtIndex?.checkpoints && this.txtIndexStore?.readChapterRange) {
         this.txtGeneration = (await this.getTxtDirectory()).generation;
+        this.windowHighlights = new TxtWindowHighlights(doc);
         this.txtWindow = new TxtWindowManager({ doc, iframe: this.getIframe()!, element,
           chapters: this.txtIndex.chapters, checkpoints: this.txtIndex.checkpoints,
           generation: this.txtGeneration, encoding: this.txtIndex.encoding,
           read: this.txtIndexStore.readChapterRange,
+          windowChanged: () => {
+            this.clearWindowAuxiliary();
+            this.windowHighlights?.update(this.windowNotes, this.txtWindow?.views || [], this.windowClick);
+            this.trigger("txt-window-changed");
+          },
           changed: position => {
             const chapter = this.txtIndex!.chapters[position.chapter];
             const previous = this.tempLocation.txtWindow;
             Object.assign(this.tempLocation, { chapterDocIndex: String(position.chapter), chapterTitle: chapter.label,
-              chapterHref: `title${position.chapter}`, count: "0",
+              chapterHref: `title${position.chapter}`, count: "0", text: "", page: "",
+              xpath: `/body/DocFragment[${position.chapter + 1}]`, timestamp: Math.floor(Date.now()/1000),
               txtWindow: { version: 1, chapterId: position.chapterId, generation: position.generation, offset: position.offset },
               percentage: String((chapter.start + position.offset) / Math.max(1, this.txtIndex!.textLength)) });
             if (previous?.chapterId !== position.chapterId || previous?.offset !== position.offset)
@@ -116,6 +144,7 @@ class TxtRender extends GeneralRender {
           bookLocation?.refresh === true
         );
         this.txtIndex = index;
+        this.txtChapterById = new Map(index.chapters.map(chapter=>[chapter.chapterId,chapter]));
         this.book?.destroy?.();
         this.book = makeHtmlBook(
           "",
@@ -194,20 +223,189 @@ class TxtRender extends GeneralRender {
       throw error;
     }
   }
+  getTxtWindowState() {
+    if (!this.txtWindow) return undefined;
+    return { key:this.txtWindow.key, generation:this.txtGeneration, blocks:this.txtWindow.views.map(block=>({chapterIndex:block.chapter.index,chapterId:block.chapter.chapterId,start:Math.max(0,block.start-block.chapter.bodyStart),end:Math.max(0,block.end-block.chapter.bodyStart)})).filter(block=>block.end>block.start) };
+  }
+  getTxtSourceRange(chapterId:string,start:number,end:number) {
+    const chapter=this.txtChapterById.get(chapterId);
+    if(!chapter||!this.txtWindow)throw Error("TXT window source is unavailable");
+    return windowRange(this.txtWindow.views,chapterId,chapter.bodyStart+start,chapter.bodyStart+end);
+  }
+  getTxtHighlightRanges() { return this.windowHighlights?.ranges || []; }
+  getTxtGeneration() { return this.txtGeneration; }
+  private windowPosition(chapterIndex:number,offset:number) {
+    const chapter=this.txtIndex!.chapters[chapterIndex];
+    return { ...this.tempLocation, chapterDocIndex:String(chapterIndex),chapterTitle:chapter.label,chapterHref:`title${chapterIndex}`,count:"0",text:"",page:"",xpath:`/body/DocFragment[${chapterIndex+1}]`,percentage:String((chapter.start+offset)/Math.max(1,this.txtIndex!.textLength)),txtWindow:{version:1,chapterId:chapter.chapterId,generation:this.txtGeneration,offset} };
+  }
+  async goToXpath(xpath:string) {
+    if (!this.txtWindow) return super.goToXpath(xpath);
+    const chapterDocIndex=Number(/DocFragment\[(\d+)\]/.exec(xpath)?.[1] || 1)-1;
+    await this.goToPosition(JSON.stringify({chapterDocIndex,xpath}));
+  }
+  async goToNode(node: Node) {
+    if (!this.txtWindow) return super.goToNode(node);
+    if (!this.getDocument()?.contains(node)) return;
+    const range=this.getDocument()!.createRange();range.selectNodeContents(node);
+    this.element.scrollTop=Math.max(0,range.getBoundingClientRect().top);await this.record();
+  }
+  async getNotePosition() {
+    if (!this.txtWindow) return super.getNotePosition();
+    const selection=this.getDocument()!.getSelection();
+    if (selection?.rangeCount) {
+      const range=selection.getRangeAt(0), point=windowPoint(this.txtWindow.views,range.startContainer,range.startOffset);
+      return this.windowPosition(point.block.chapter.index,point.position-point.block.chapter.start);
+    }
+    await this.record();return this.tempLocation;
+  }
+  async getHighlightCoords() { if (this.txtWindow) return this.getAnnotationAnchor(); return super.getHighlightCoords(); }
+  async prevChapter() {
+    if (!this.txtWindow) return super.prevChapter();
+    const chapter=Math.max(0,Number(this.tempLocation.chapterDocIndex||0)-1);await this.goToChapterDocIndex(chapter);
+  }
+  async nextChapter() {
+    if (!this.txtWindow) return super.nextChapter();
+    const chapter=Math.min(this.txtIndex!.chapters.length-1,Number(this.tempLocation.chapterDocIndex||0)+1);await this.goToChapterDocIndex(chapter);
+  }
+  async goToPercentage(percentage:number) {
+    if (!this.txtWindow) return super.goToPercentage(percentage);
+    if (!Number.isFinite(percentage)||percentage<0||percentage>1) throw Error("Invalid TXT progress");
+    this.navigationVersion++;
+    const chapters=this.txtIndex!.chapters,position=Math.floor(this.txtIndex!.textLength*percentage);
+    let low=0,high=chapters.length-1;
+    while(low<high){const middle=(low+high+1)>>>1;if(chapters[middle].start<=position)low=middle;else high=middle-1;}
+    await this.txtWindow.jump(low,Math.max(0,Math.min(chapters[low].end-chapters[low].start,position-chapters[low].start)));this.trigger("rendered");
+  }
+  private windowPageCharacters() {
+    const chapter=this.getTxtChapterSnapshot()!;
+    return Math.max(1,this.getEstimatedSizePerPage()*Math.max(1,chapter.end-chapter.start)/Math.max(1,chapter.size));
+  }
+  getChapterProgress() {
+    if (!this.txtWindow) return super.getChapterProgress();
+    const chapter=this.getTxtChapterSnapshot()!,size=this.windowPageCharacters(),offset=this.tempLocation.txtWindow?.offset||0;
+    const totalPage=Math.max(1,Math.ceil((chapter.end-chapter.start)/size));
+    return {totalPage,currentPage:Math.min(totalPage,Math.floor(offset/size)+1),percentage:this.tempLocation.percentage||"0"};
+  }
+  getProgress() {
+    if (!this.txtWindow) return super.getProgress();
+    if(this.isShowTotalPage!=="yes")return this.getChapterProgress();
+    const totalPage=Math.max(1,Math.ceil(this.txtIndex!.textLength/this.windowPageCharacters()));
+    return {totalPage,currentPage:Math.min(totalPage,Math.floor(totalPage*Number(this.tempLocation.percentage||0))+1),percentage:this.tempLocation.percentage||"0"};
+  }
+  async goToPage(page:number) {
+    if (!this.txtWindow) return super.goToPage(page);
+    this.navigationVersion++;
+    const chapter=this.getTxtChapterSnapshot()!;await this.txtWindow.jump(chapter.index,Math.min(chapter.end-chapter.start,Math.max(0,Math.floor((page-1)*this.windowPageCharacters()))));
+  }
+  cancelTxtSearch() { this.searchVersion++; }
+  async doSearch(keyword:string) {
+    if(!this.txtWindow)return super.doSearch(keyword);
+    const version=++this.searchVersion;
+    const result=await searchTxtWindow(this.txtWindow,this.txtIndex!.chapters,this.txtGeneration,keyword,()=>version===this.searchVersion&&!this.txtWindow?.closed);
+    if(version!==this.searchVersion)return [];
+    this.searchHasMore=result.hasMore;return result.records;
+  }
+  private paintWindowAuxiliary(name:string,ranges:Range[],style:string) {
+    const doc=this.getDocument();if(!doc)return;
+    const api=doc.defaultView as unknown as {Highlight:new(...ranges:Range[])=>{priority:number};CSS:{highlights:Map<string,unknown>}};
+    if(!ranges.length){api.CSS.highlights.delete(name);return;}
+    const probe=doc.createElement("span");probe.style.cssText=style;
+    const css=["background-color","color","text-decoration","text-decoration-color","text-decoration-style","text-decoration-thickness"].map(property=>`${property}:${probe.style.getPropertyValue(property)}`).join(";");
+    let element=doc.getElementById(name);if(!element){element=doc.createElement("style");element.id=name;doc.head.append(element);}element.textContent=`::highlight(${name}){${css}}`;
+    const highlight=new api.Highlight(...ranges);highlight.priority=2000000;api.CSS.highlights.set(name,highlight);this.auxiliaryHighlights.add(name);
+  }
+  private clearWindowAuxiliary() {
+    if(!this.auxiliaryHighlights.size)return;
+    const doc=this.getDocument(),css=(doc?.defaultView as unknown as {CSS?:{highlights?:Map<string,unknown>}})?.CSS;
+    for(const name of this.auxiliaryHighlights){css?.highlights?.delete(name);doc?.getElementById(name)?.remove();}this.auxiliaryHighlights.clear();
+  }
+  highlightSearchNode(text:string,style:string) {
+    if(!this.txtWindow)return super.highlightSearchNode(text,style);
+    const ranges:Range[]=[];const pattern=new RegExp(escapeTxtPattern(text),"giu"),views=this.txtWindow.views;
+    if(text)for(const chapterId of new Set(views.map(block=>block.chapter.chapterId))){
+      const blocks=views.filter(block=>block.chapter.chapterId===chapterId),source=blocks.map(block=>block.text).join("");
+      for(const match of source.matchAll(pattern)){if(ranges.length>=200)break;ranges.push(windowRange(blocks,chapterId,blocks[0].start+match.index!,blocks[0].start+match.index!+match[0].length));}
+    }
+    this.paintWindowAuxiliary("koodo-txt-search",ranges,style);
+  }
+  async audioText(forSpeech = false) {
+    if(!this.txtWindow)return super.audioText();
+    const chapters=this.txtIndex!.chapters,chapterIndex=(forSpeech?this.audioNext?.chapter:undefined)??Number(this.tempLocation.chapterDocIndex||0),offset=(forSpeech?this.audioNext?.offset:undefined)??Number(this.tempLocation.txtWindow?.offset||0);
+    if(forSpeech)this.audioNext=undefined;
+    for(let index=chapterIndex;index<chapters.length;index++){
+      const chapter=chapters[index];
+      for await(const block of this.txtWindow.readBlocks(index,index===chapterIndex?offset:0)){
+        const start=Math.max(block.start,chapter.bodyStart,index===chapterIndex?chapter.start+offset:0),text=block.text.slice(start-block.start);
+        const lines=text.split("\n").filter(line=>line.trim());if(!lines.length)continue;
+        if(forSpeech)this.audioBatch={chapter:index,start,end:block.end,text,cursor:0};return lines;
+      }
+    }
+    if(forSpeech)this.audioBatch=undefined;return [];
+  }
+  async advanceTxtAudio() {
+    if(!this.txtWindow||!this.audioBatch)return false;
+    let {chapter,end}=this.audioBatch;const chapters=this.txtIndex!.chapters;
+    if(end>=chapters[chapter].end){chapter++;if(chapter>=chapters.length){this.audioBatch=undefined;return false;}end=chapters[chapter].start;}
+    await this.txtWindow.jump(chapter,end-chapters[chapter].start);this.audioNext={chapter,offset:end-chapters[chapter].start};this.audioBatch=undefined;return true;
+  }
+  resetTxtAudio() { this.audioBatch=undefined;this.audioNext=undefined;this.clearWindowAuxiliary(); }
+  setTxtAudioSequence(texts:string[],skip=0) {
+    const batch=this.audioBatch;if(!batch)return;let cursor=0;
+    batch.positions=texts.map(text=>{const index=batch.text.indexOf(text,cursor);if(index>=0)cursor=index+text.length;return index;}).slice(skip);
+  }
+  async highlightAudioNode(text:string,style:string,sentenceIndex?:number) {
+    if(!this.txtWindow)return super.highlightAudioNode(text,style);
+    const batch=this.audioBatch;if(!batch||!text)return;
+    const index=sentenceIndex!==undefined&&batch.positions?batch.positions[sentenceIndex]:batch.text.indexOf(text,batch.cursor);if(index===undefined||index<0)return;
+    batch.cursor=index+text.length;const chapter=this.txtIndex!.chapters[batch.chapter],start=batch.start+index;
+    let range:Range;
+    try{range=windowRange(this.txtWindow.views,chapter.chapterId,start,start+text.length);}catch{await this.txtWindow.jump(chapter.index,start-chapter.start);range=windowRange(this.txtWindow.views,chapter.chapterId,start,start+text.length);}
+    this.paintWindowAuxiliary("koodo-txt-audio",[range],style);
+    this.element.scrollTop=Math.max(0,range.getBoundingClientRect().top);await this.record();
+  }
+  async visibleText() {
+    if(!this.txtWindow)return super.visibleText();
+    return this.txtWindow.views.filter(block=>{const rect=block.node.getBoundingClientRect();return rect.bottom>this.element.scrollTop&&rect.top<this.element.scrollTop+this.element.clientHeight;}).map(block=>block.text);
+  }
+  async chapterText() {
+    if(!this.txtWindow)return super.chapterText();
+    return this.txtWindow.views.filter(block=>block.chapter.index===Number(this.tempLocation.chapterDocIndex||0)).map(block=>block.text).join("");
+  }
+  async getRestAudioText(count:number) {
+    if(!this.txtWindow)return super.getRestAudioText(count);
+    const result:{chapterDocIndex:number;audioText:string[]}[]=[];
+    for(let index=Number(this.tempLocation.chapterDocIndex||0)+1;index<Math.min(this.txtIndex!.chapters.length,Number(this.tempLocation.chapterDocIndex||0)+1+Math.min(3,Math.max(0,count)));index++){
+      const audioText:string[]=[];let blocks=0;
+      for await(const block of this.txtWindow.readBlocks(index)){audioText.push(...block.text.split("\n").filter(line=>line.trim()));if(++blocks===2)break;}
+      result.push({chapterDocIndex:index,audioText});
+    }return result;
+  }
+
   isTxtWindowActive() { return !!this.txtWindow; }
   async goToChapter(index: number, href: string, title: string) {
     if (!this.txtWindow) return super.goToChapter(index, href, title);
-    await this.txtWindow.jump(Number(index)); this.trigger("rendered");
+    this.navigationVersion++;
+    this.resetTxtAudio(); await this.txtWindow.jump(Number(index)); this.trigger("rendered");
   }
   async goToPosition(value: string) {
     if (!this.txtWindow) return super.goToPosition(value);
-    const saved = JSON.parse(value), index = Number(saved.chapterDocIndex || 0), chapter = this.txtIndex?.chapters[index];
+    const version = ++this.navigationVersion;
+    this.resetTxtAudio();
+    const saved = JSON.parse(value), index = saved.txtWindow ? this.txtChapterById.get(saved.txtWindow.chapterId)?.index ?? -1 : Number(saved.chapterDocIndex || 0), chapter = this.txtIndex?.chapters[index];
     if (!chapter) throw new Error("TXT saved chapter is unavailable");
     if (saved.txtWindow && (saved.txtWindow.version !== 1 || saved.txtWindow.chapterId !== chapter.chapterId || saved.txtWindow.generation !== this.txtGeneration))
       throw new Error("TXT saved window belongs to another index generation");
-    // Legacy count is a DOM paragraph ordinal, never a UTF-16 offset. Preserve
-    // safe chapter-level fallback; phase 8 supplies exact legacy text/DOM mapping.
-    await this.txtWindow.jump(index, saved.txtWindow?.offset ?? 0);
+    let offset = saved.txtWindow?.offset;
+    if (offset === undefined && saved.annotationBindingId) {
+      if (saved.annotationStatus !== "active" || saved.annotationChapterId !== chapter.chapterId || saved.annotationGeneration !== this.txtGeneration)
+        throw Error("TXT annotation belongs to another index generation");
+      offset = chapter.bodyStart - chapter.start + Number(saved.annotationStart || 0);
+    }
+    if (offset === undefined) {
+      offset = await resolveLegacyTxtPosition(this.txtWindow, chapter, saved, () => version === this.navigationVersion);
+      if (version !== this.navigationVersion) return;
+    }
+    await this.txtWindow.jump(index, offset);
     this.trigger("rendered");
   }
   async record() {
@@ -241,13 +439,20 @@ class TxtRender extends GeneralRender {
     return this.book?.sections?.[Number(this.tempLocation?.chapterDocIndex || 0)]?.chapter;
   }
   getAnnotationAnchor() {
-    if (this.txtWindow) throw new Error("TXT window annotations require the phase-8 mapping adapter");
+    if (this.txtWindow) {
+      if (!this.txtIndexStore?.sourceTicket) throw new Error("TXT source is unavailable for annotations");
+      return { format:"TXT", sourceTicket:this.txtIndexStore.sourceTicket, ...selectedWindowAnchor(this.getDocument()!, this.txtWindow.views) };
+    }
     const chapter=this.getTxtChapterSnapshot(),doc=this.getDocument();
     if(!chapter||!doc||!this.txtIndexStore?.sourceTicket)throw new Error("TXT source is unavailable for annotations");
     return {format:"TXT",sourceTicket:this.txtIndexStore.sourceTicket,...selectedTxtAnchor(doc,chapter)};
   }
-  async renderHighlighters(notes: Array<{key:string;entityKey?:string;bindingId?:string;color:string;hasNote?:boolean;notes?:string;txtAnchor?:{start:number;end:number}}>,handleNoteClick:(event:Event)=>void) {
-    if (this.txtWindow) return; // Phase 8 owns visible-block mapping and incremental highlights.
+  async renderHighlighters(notes: Array<{key:string;entityKey?:string;bindingId?:string;color:string;hasNote?:boolean;notes?:string;chapterIndex?:number;txtAnchor?:{start:number;end:number}}>,handleNoteClick:(event:Event)=>void) {
+    if (this.txtWindow) {
+      this.windowNotes = notes.filter(note => note.txtAnchor).map(note => ({ ...note, chapterIndex: note.chapterIndex ?? Number(this.tempLocation.chapterDocIndex || 0) }));
+      this.windowClick = handleNoteClick;
+      this.windowHighlights!.update(this.windowNotes, this.txtWindow.views, handleNoteClick); return;
+    }
     if(!this.txtIndexStore?.sourceTicket)return super.renderHighlighters(notes,handleNoteClick);
     const doc=this.getDocument(),chapter=this.getTxtChapterSnapshot();if(!doc||!chapter)return;
     clearHighlight(doc,this.diagnosticTraceId);
@@ -267,7 +472,9 @@ class TxtRender extends GeneralRender {
     }
   }
   removeContent() {
-    this.txtWindow?.destroy(); this.txtWindow = undefined; this.txtIndex = undefined;
+    this.navigationVersion++; this.searchVersion++; this.windowHighlights?.destroy(); this.windowHighlights = undefined;
+    this.windowNotes = []; this.relatedAnnotations=[]; this.audioBatch = undefined; this.audioNext=undefined; this.clearWindowAuxiliary();
+    this.txtWindow?.destroy(); this.txtWindow = undefined; this.txtIndex = undefined; this.txtChapterById.clear();
     super.removeContent();
     this.book?.destroy?.();
     this.book = null;
@@ -290,6 +497,7 @@ class TxtRender extends GeneralRender {
       const previousChapter = Number(this.tempLocation.chapterDocIndex || 0);
       await this.parse({ refresh: true });
       if (previousWindow) {
+        this.windowHighlights?.destroy(); this.windowHighlights = undefined; this.windowNotes = [];
         previousWindow.destroy(); this.txtWindow = undefined;
         await this.renderTo(this.element);
         await this.goToChapterDocIndex(Math.min(previousChapter, this.chapterDocList.length - 1));

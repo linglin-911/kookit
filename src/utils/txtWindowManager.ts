@@ -1,7 +1,8 @@
+import type { TxtBlockView } from "../libs/txtWindowAnchors";
 import type { PersistentTxtChapter } from "../libs/txtIndex";
 import type { TxtCheckpoint } from "../libs/txtBlocks";
 export const TXT_WINDOW_BUDGET = { chapters: 24, blocks: 24, characters: 128 * 1024, nodes: 20000 };
-interface Block {
+export interface TxtWindowBlock {
     chapter: number;
     byteStart: number;
     byteEnd: number;
@@ -9,8 +10,9 @@ interface Block {
     end: number;
 }
 interface Mounted {
-    block: Block;
+    block: TxtWindowBlock;
     node: HTMLElement;
+    text: string;
 }
 interface Options {
     doc: Document;
@@ -27,15 +29,18 @@ interface Options {
         chapterId: string;
         generation: string | null;
     }) => void;
+    windowChanged?: () => void;
     error: (error: unknown) => void;
 }
 /** One owner, one in-flight range, no Blob/HTML cache. The sparse directory is
  * metadata only; a deep chapter/block jump never decodes preceding source. */
 export class TxtWindowManager {
-    private blocks: Block[] = [];
+    private blocks: TxtWindowBlock[] = [];
     private chapterBlocks: number[] = [];
     private mounted: Mounted[] = [];
     private token = 0;
+    private lastWindow = "";
+    private mountEpoch = 0;
     private dead = false;
     private frame = 0;
     private busy = false;
@@ -185,7 +190,7 @@ export class TxtWindowManager {
         node.dataset.txtStart = String(block.start);
         node.dataset.txtEnd = String(block.end);
         node.textContent = text;
-        return { block, node };
+        return { block, node, text };
     }
     private chapterNode(chapter: number) {
         const id = this.options.chapters[chapter].chapterId;
@@ -230,7 +235,7 @@ export class TxtWindowManager {
         while (walker.nextNode() && count <= TXT_WINDOW_BUDGET.nodes) count++;
         return count;
     }
-    private fits(block: Block) {
+    private fits(block: TxtWindowBlock) {
         const chapters = new Set(this.mounted.map(m => m.block.chapter));
         chapters.add(block.chapter);
         return chapters.size <= TXT_WINDOW_BUDGET.chapters && this.mounted.length < TXT_WINDOW_BUDGET.blocks &&
@@ -297,6 +302,8 @@ export class TxtWindowManager {
                 this.mount(m);
             }
             this.emitPosition();
+            const key = this.key;
+            if (key !== this.lastWindow) { this.lastWindow = key; this.options.windowChanged?.(); }
         }
         finally {
             this.busy = false;
@@ -324,6 +331,7 @@ export class TxtWindowManager {
             return;
         this.options.doc.getSelection()?.removeAllRanges();
         // Commit only after the destination is ready. Boundary scrolls never clear body.
+        this.mountEpoch++;
         this.root.replaceChildren();
         this.mounted = [];
         this.anchor = undefined;
@@ -342,6 +350,30 @@ export class TxtWindowManager {
         this.emitPosition();
         await this.fill();
         this.schedule();
+    }
+    get views(): TxtBlockView[] {
+        return this.mounted.map(m => ({node:m.node,chapter:this.options.chapters[m.block.chapter],start:m.block.start,end:m.block.end,text:m.text}));
+    }
+    get key() { return `${this.mountEpoch}:` + this.mounted.map(m => m.node.dataset.txtBlock).join(","); }
+    get sourceBlocks() { return this.blocks; }
+    get closed() { return this.dead; }
+    async *readBlocks(chapter: number, offset = 0, valid: () => boolean = () => true) {
+        const current = this.options.chapters[chapter];
+        if (!current) return;
+        const first = this.chapterBlocks[chapter], last = this.chapterBlocks[chapter + 1] ?? this.blocks.length;
+        for (let i = first; i < last && !this.dead && valid(); i++) {
+            const block = this.blocks[i]; if (block.end <= current.start + offset) continue;
+            const request = this.reads.then(async () => {
+                if (this.dead || !valid()) return undefined;
+                return this.options.read(current,block.byteStart-current.byteStart,block.byteEnd-block.byteStart);
+            });
+            this.reads = request.catch(() => {});
+            const bytes = await request; if (!bytes || this.dead || !valid()) return;
+            if (bytes.length !== block.byteEnd - block.byteStart) throw Error("Incomplete TXT text range");
+            const text = new TextDecoder(this.options.encoding,{fatal:true,ignoreBOM:true}).decode(bytes).replace(/\r\n?/g,"\n");
+            if (text.length !== block.end - block.start) throw Error("TXT text range coordinates changed");
+            yield { ...block, text };
+        }
     }
     async move(direction: number) {
         await this.fill();
