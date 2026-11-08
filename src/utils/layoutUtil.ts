@@ -144,11 +144,11 @@ export const handleIframeHeight = async (
 
 export const handleOneChapterDoc = async (item, isSearch: boolean) => {
   let chapterText = "";
-  if (item && item.load) {
-    let chapteruUrl = await item.load();
-    let res = await fetch(chapteruUrl);
-    let blob = await res.blob();
-    chapterText = await blob.text();
+  if (item?.readText) {
+    chapterText = await item.readText();
+  } else if (item && item.load) {
+    const chapterUrl = await item.load();
+    chapterText = await (await fetch(chapterUrl)).text();
   }
 
   if (isSearch) {

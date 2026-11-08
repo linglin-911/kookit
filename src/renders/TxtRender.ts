@@ -23,10 +23,18 @@ import { beginDiagnostic, diagnosticError } from "../utils/diagnostics";
 class TxtRender extends GeneralRender {
   txtWindow?: TxtWindowManager;
   private continuousScroll: boolean;
+  private disposed = false;
+  private closeTask?: Promise<void>;
+  private parseVersion = 0;
+  private cleanups = new Set<() => void>();
+  addCleanup(cleanup: () => void) {
+    if (this.disposed) { cleanup(); return; }
+    this.cleanups.add(cleanup);
+  }
   private windowHighlights?: TxtWindowHighlights;
   private windowNotes: WindowNote[] = [];
   private relatedAnnotations: unknown[] = [];
-  setTxtRelatedAnnotations(rows:unknown[]) { this.relatedAnnotations=rows; }
+  setTxtRelatedAnnotations(rows:unknown[]) { if (!this.disposed) this.relatedAnnotations=rows; }
   getTxtRelatedAnnotations() { return this.relatedAnnotations; }
   private windowClick: (event: Event) => void = () => {};
   private searchVersion = 0;
@@ -50,6 +58,8 @@ class TxtRender extends GeneralRender {
     this.parserRegex = config.parserRegex;
     this.txtIndexStore = config.txtIndexStore;
     this.onTxtWindowPosition = config.onTxtWindowPosition;
+    const positionCallback = config.onTxtWindowPosition;
+    if (typeof positionCallback?.cancel === "function") this.addCleanup(() => positionCallback.cancel());
     // Transforming/assisted reading keeps its established rendering path until
     // it has an equivalent source map; never silently ignore a reader setting.
     this.continuousScroll = config.txtContinuousScroll === true && this.readerMode === "scroll" &&
@@ -63,20 +73,25 @@ class TxtRender extends GeneralRender {
       bufferBytes: this.txtBuffer.byteLength,
     });
     try {
+      if (this.disposed) throw Error("TXT reader is closed");
       this.element = element;
       if (!this.book) {
         await this.parse(bookLocation);
       }
+      if (this.disposed) throw Error("TXT reader is closed");
       const parser = new GeneralParser(this.book);
       const chapterFinish = beginDiagnostic("TXT", "buildChapterIndex", {
         traceId: this.diagnosticTraceId,
       });
-      this.chapterList = await parser.getChapter(this.book.toc);
-      this.chapterDocList = await parser.getChapterDoc();
+      const chapterList = await parser.getChapter(this.book.toc);
+      const chapterDocList = await parser.getChapterDoc();
+      if (this.disposed) throw Error("TXT reader is closed");
+      this.chapterList = chapterList; this.chapterDocList = chapterDocList;
       chapterFinish({
         chapterCount: this.chapterList.length,
         chapterDocCount: this.chapterDocList.length,
       });
+      if (this.disposed) throw Error("TXT reader is closed");
       createIframe(element, this.isAllowScript);
       const doc = this.getDocument();
       if (!doc) {
@@ -87,6 +102,7 @@ class TxtRender extends GeneralRender {
       handleLayout(element, this.readerMode, doc);
       if (this.continuousScroll && this.txtIndex?.checkpoints && this.txtIndexStore?.readChapterRange) {
         this.txtGeneration = (await this.getTxtDirectory()).generation;
+        if (this.disposed) throw Error("TXT reader is closed");
         this.windowHighlights = new TxtWindowHighlights(doc);
         this.txtWindow = new TxtWindowManager({ doc, iframe: this.getIframe()!, element,
           chapters: this.txtIndex.chapters, checkpoints: this.txtIndex.checkpoints,
@@ -127,6 +143,9 @@ class TxtRender extends GeneralRender {
     }
   }
   async parse(bookLocation?: any) {
+    if (this.disposed) throw Error("TXT reader is closed");
+    const version = ++this.parseVersion;
+    const assertCurrent = () => { if (this.disposed || version !== this.parseVersion) throw Error("TXT preparation cancelled"); };
     const finish = beginDiagnostic("TXT", "parse", {
       traceId: this.diagnosticTraceId,
       bufferBytes: this.txtBuffer.byteLength,
@@ -148,8 +167,10 @@ class TxtRender extends GeneralRender {
         // Old valid caches lacked sparse blocks. A supported scroll session
         // requests a verified, same-generation metadata upgrade before mounting,
         // rather than silently re-entering the replace-and-reset chapter path.
-        if (this.continuousScroll && !index.checkpoints && this.txtIndexStore.ensureBlocks)
-          index = await this.txtIndexStore.ensureBlocks();
+        assertCurrent();
+        if (this.continuousScroll && !index.checkpoints && store.ensureBlocks)
+          index = await store.ensureBlocks();
+        assertCurrent();
         this.txtIndex = index;
         this.txtChapterById = new Map(index.chapters.map(chapter=>[chapter.chapterId,chapter]));
         this.book?.destroy?.();
@@ -212,6 +233,8 @@ class TxtRender extends GeneralRender {
         cacheHit,
         chapterCount: index?.chapters.length || 0,
       });
+      assertCurrent();
+      this.book?.destroy?.();
       this.book = makeHtmlBook(
         text,
         true,
@@ -306,6 +329,7 @@ class TxtRender extends GeneralRender {
   }
   cancelTxtSearch() { this.searchVersion++; }
   async doSearch(keyword:string) {
+    if(this.disposed)return [];
     if(!this.txtWindow)return super.doSearch(keyword);
     const version=++this.searchVersion;
     const result=await searchTxtWindow(this.txtWindow,this.txtIndex!.chapters,this.txtGeneration,keyword,()=>version===this.searchVersion&&!this.txtWindow?.closed);
@@ -313,6 +337,7 @@ class TxtRender extends GeneralRender {
     this.searchHasMore=result.hasMore;return result.records;
   }
   private paintWindowAuxiliary(name:string,ranges:Range[],style:string) {
+    if(this.disposed)return;
     const doc=this.getDocument();if(!doc)return;
     const api=doc.defaultView as unknown as {Highlight:new(...ranges:Range[])=>{priority:number};CSS:{highlights:Map<string,unknown>}};
     if(!ranges.length){api.CSS.highlights.delete(name);return;}
@@ -336,12 +361,15 @@ class TxtRender extends GeneralRender {
     this.paintWindowAuxiliary("koodo-txt-search",ranges,style);
   }
   async audioText(forSpeech = false) {
+    if (this.disposed) return [];
     if(!this.txtWindow)return super.audioText();
     const chapters=this.txtIndex!.chapters,chapterIndex=(forSpeech?this.audioNext?.chapter:undefined)??Number(this.tempLocation.chapterDocIndex||0),offset=(forSpeech?this.audioNext?.offset:undefined)??Number(this.tempLocation.txtWindow?.offset||0);
     if(forSpeech)this.audioNext=undefined;
-    for(let index=chapterIndex;index<chapters.length;index++){
+    const manager = this.txtWindow;
+    for(let index=chapterIndex;index<chapters.length&&!this.disposed;index++){
       const chapter=chapters[index];
-      for await(const block of this.txtWindow.readBlocks(index,index===chapterIndex?offset:0)){
+      for await(const block of manager.readBlocks(index,index===chapterIndex?offset:0)){
+        if (this.disposed) return [];
         const start=Math.max(block.start,chapter.bodyStart,index===chapterIndex?chapter.start+offset:0),text=block.text.slice(start-block.start);
         const lines=text.split("\n").filter(line=>line.trim());if(!lines.length)continue;
         if(forSpeech)this.audioBatch={chapter:index,start,end:block.end,text,cursor:0};return lines;
@@ -353,7 +381,7 @@ class TxtRender extends GeneralRender {
     if(!this.txtWindow||!this.audioBatch)return false;
     let {chapter,end}=this.audioBatch;const chapters=this.txtIndex!.chapters;
     if(end>=chapters[chapter].end){chapter++;if(chapter>=chapters.length){this.audioBatch=undefined;return false;}end=chapters[chapter].start;}
-    await this.txtWindow.jump(chapter,end-chapters[chapter].start);this.audioNext={chapter,offset:end-chapters[chapter].start};this.audioBatch=undefined;return true;
+    await this.txtWindow.jump(chapter,end-chapters[chapter].start);if(this.disposed)return false;this.audioNext={chapter,offset:end-chapters[chapter].start};this.audioBatch=undefined;return true;
   }
   resetTxtAudio() { this.audioBatch=undefined;this.audioNext=undefined;this.clearWindowAuxiliary(); }
   setTxtAudioSequence(texts:string[],skip=0) {
@@ -379,11 +407,12 @@ class TxtRender extends GeneralRender {
     return this.txtWindow.views.filter(block=>block.chapter.index===Number(this.tempLocation.chapterDocIndex||0)).map(block=>block.text).join("");
   }
   async getRestAudioText(count:number) {
+    if(this.disposed)return [];
     if(!this.txtWindow)return super.getRestAudioText(count);
-    const result:{chapterDocIndex:number;audioText:string[]}[]=[];
-    for(let index=Number(this.tempLocation.chapterDocIndex||0)+1;index<Math.min(this.txtIndex!.chapters.length,Number(this.tempLocation.chapterDocIndex||0)+1+Math.min(3,Math.max(0,count)));index++){
+    const result:{chapterDocIndex:number;audioText:string[]}[]=[],manager=this.txtWindow,chapters=this.txtIndex!.chapters;
+    for(let index=Number(this.tempLocation.chapterDocIndex||0)+1;!this.disposed&&index<Math.min(chapters.length,Number(this.tempLocation.chapterDocIndex||0)+1+Math.min(3,Math.max(0,count)));index++){
       const audioText:string[]=[];let blocks=0;
-      for await(const block of this.txtWindow.readBlocks(index)){audioText.push(...block.text.split("\n").filter(line=>line.trim()));if(++blocks===2)break;}
+      for await(const block of manager.readBlocks(index)){if(this.disposed)return [];audioText.push(...block.text.split("\n").filter(line=>line.trim()));if(++blocks===2)break;}
       result.push({chapterDocIndex:index,audioText});
     }return result;
   }
@@ -395,6 +424,7 @@ class TxtRender extends GeneralRender {
     this.resetTxtAudio(); await this.txtWindow.jump(Number(index)); this.trigger("rendered");
   }
   async goToPosition(value: string) {
+    if (this.disposed) return;
     if (!this.txtWindow) return super.goToPosition(value);
     const version = ++this.navigationVersion;
     this.resetTxtAudio();
@@ -416,11 +446,12 @@ class TxtRender extends GeneralRender {
     this.trigger("rendered");
   }
   async record() {
+    if (this.disposed) return;
     if (!this.txtWindow) return super.record();
     this.txtWindow.record(); this.trigger("page-changed");
   }
-  async next() { if (this.txtWindow) return this.txtWindow.move(1); return super.next(); }
-  async prev() { if (this.txtWindow) return this.txtWindow.move(-1); return super.prev(); }
+  async next() { if (this.disposed) return; if (this.txtWindow) return this.txtWindow.move(1); return super.next(); }
+  async prev() { if (this.disposed) return; if (this.txtWindow) return this.txtWindow.move(-1); return super.prev(); }
   async getTxtDirectory() {
     if (this.txtIndexStore?.readDirectory) return this.txtIndexStore.readDirectory();
     // Volatile/unsupported encodings keep their existing parser; directory
@@ -460,6 +491,7 @@ class TxtRender extends GeneralRender {
       this.windowClick = handleNoteClick;
       this.windowHighlights!.update(this.windowNotes, this.txtWindow.views, handleNoteClick); return;
     }
+    if(this.disposed)return;
     if(!this.txtIndexStore?.sourceTicket)return super.renderHighlighters(notes,handleNoteClick);
     const doc=this.getDocument(),chapter=this.getTxtChapterSnapshot();if(!doc||!chapter)return;
     clearHighlight(doc,this.diagnosticTraceId);
@@ -479,20 +511,42 @@ class TxtRender extends GeneralRender {
     }
   }
   removeContent() {
+    if (this.disposed) return this.closeTask;
+    this.disposed = true; this.parseVersion++;
+    for (const cleanup of this.cleanups) {
+      try { cleanup(); } catch (error) { diagnosticError("TXT", "cleanup:failed", error, { traceId: this.diagnosticTraceId }); }
+    }
+    this.cleanups.clear();
+    if (this.element) {
+      this.autoScroll?.(0, "no");
+      this.readingRulerManager?.removeOverlay(); this.speedReadingManager?.removeOverlay(); this.paragraphModeManager?.removeOverlay();
+    }
+    this.disposeEvents?.(); this.releaseChapterCaches?.();
     this.navigationVersion++; this.searchVersion++; this.windowHighlights?.destroy(); this.windowHighlights = undefined;
     this.windowNotes = []; this.relatedAnnotations=[]; this.audioBatch = undefined; this.audioNext=undefined; this.clearWindowAuxiliary();
     this.txtWindow?.destroy(); this.txtWindow = undefined; this.txtIndex = undefined; this.txtChapterById.clear();
-    super.removeContent();
+    if (this.element) super.removeContent();
+    this.callbacks = { base: {} };
+    this.flattenChapters = []; this.chapterSizeCache = null; this.transMap = {};
+    this.windowClick = () => {}; this.onTxtWindowPosition = undefined; this.txtGeneration = null;
     this.book?.destroy?.();
     this.book = null;
     this.chapterList = [];
     this.chapterDocList = [];
     this.txtBuffer = new ArrayBuffer(0);
-    this.txtIndexStore?.close?.().catch((error) => {
+    if (this.speedReadingManager) { this.speedReadingManager.words = []; this.speedReadingManager.playing = false; }
+    if (this.paragraphModeManager) this.paragraphModeManager.currentParagraph = null;
+    this.closeTask = this.txtIndexStore?.close?.().catch((error) => {
       diagnosticError("TXT", "closeSource:failed", error, {
         traceId: this.diagnosticTraceId,
       });
     });
+    this.txtIndexStore = undefined;
+    return this.closeTask;
+  }
+  trigger(name: string, args: unknown[] = []) {
+    if (this.disposed) return;
+    return super.trigger(name, args);
   }
   async refreshContent() {
     const finish = beginDiagnostic("TXT", "refreshContent", {

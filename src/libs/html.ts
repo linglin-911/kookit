@@ -1,3 +1,4 @@
+import { TxtChapterResources } from "../utils/txtResources";
 import { mappedTxtHtml } from "./txtAnchors";
 import type { PersistentTxtChapter } from "./txtIndex";
 import {
@@ -38,8 +39,7 @@ export const makeHtmlBook = (
       const index = savedTxtIndex || buildTxtChapterIndex(bookStr, parserRegex);
       const chapterList = index.chapters;
 
-      const urls = new Map<number, string>();
-      const load = async (chapterIndex: number) => {
+      const resources = new TxtChapterResources(async (chapterIndex: number) => {
         const chapter = chapterList[chapterIndex];
         const loadFinish = beginDiagnostic("TXT", "loadChapterHtml", {
           traceId: traceId || "unknown",
@@ -82,17 +82,14 @@ export const makeHtmlBook = (
                 },
             traceId
           );
-          const page = URL.createObjectURL(
-            new Blob([chapterHtml], { type: "text/html" })
-          );
-          const previous = urls.get(chapterIndex);
-          if (previous) URL.revokeObjectURL(previous);
-          urls.set(chapterIndex, page);
+          // Internal layout/search consumers read HTML directly. Only the legacy
+          // section.load API creates a leased Blob URL.
+
           loadFinish({
-            blobUrlCreated: true,
+            blobUrlCreated: false,
             htmlCharacters: chapterHtml.length,
           });
-          return page;
+          return chapterHtml;
         } catch (error) {
           diagnosticError("TXT", "loadChapterHtml:failed", error, {
             traceId: traceId || "unknown",
@@ -101,7 +98,7 @@ export const makeHtmlBook = (
           loadFinish({ failed: true });
           throw error;
         }
-      };
+      });
 
       const book: any = {};
       book.getCover = () => "";
@@ -110,12 +107,9 @@ export const makeHtmlBook = (
         chapter: item,
         label: item.label,
         href: "title" + item.index,
-        load: () => load(item.index),
-        unload: () => {
-          const url = urls.get(item.index);
-          if (url) URL.revokeObjectURL(url);
-          urls.delete(item.index);
-        },
+        readText: () => resources.text(item.index),
+        load: () => resources.load(item.index),
+        unload: () => resources.unload(item.index),
         size: item.size,
       }));
       book.toc = chapterList
@@ -124,10 +118,8 @@ export const makeHtmlBook = (
           href: "title" + item.index,
         }))
         .filter((item) => item.label !== "");
-      book.destroy = () => {
-        for (const url of urls.values()) URL.revokeObjectURL(url);
-        urls.clear();
-      };
+      book.resourceStats = () => resources.stats;
+      book.destroy = () => { resources.destroy(); bookStr = ""; };
       book.rendition = { layout: "pre-paginated" };
       book.resolveHref = (href: string) => {
         return { index: parseInt(href.substring(5, href.length)) };

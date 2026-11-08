@@ -3,6 +3,11 @@ export default class {
    * Constructor
    */
   callbacks: any;
+  private eventTimers = new Set<ReturnType<typeof setTimeout>>();
+  protected disposeEvents() {
+    for (const timer of this.eventTimers) clearTimeout(timer);
+    this.eventTimers.clear(); this.callbacks = { base: {} };
+  }
   constructor() {
     this.callbacks = {};
     this.callbacks.base = {};
@@ -119,7 +124,7 @@ export default class {
   /**
    * Trigger
    */
-  trigger(_name, _args = []) {
+  trigger(_name, _args: unknown[] = []) {
     // Errors
     if (typeof _name === "undefined" || _name === "") {
       console.warn("wrong name");
@@ -138,7 +143,8 @@ export default class {
 
     // Resolve name
     name = this.resolveName(name[0]);
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      this.eventTimers.delete(timer);
       if (name.namespace === "base") {
         // Try to find callback in each namespace
         for (const namespace in that.callbacks) {
@@ -173,6 +179,7 @@ export default class {
         }
       }
     }, 100);
+    this.eventTimers.add(timer);
     // Default namespace
 
     // Specified namespace

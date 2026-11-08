@@ -155,3 +155,14 @@ test("desktop hosts prepare a streamed index without exposing readSource", async
   const reader = new TxtRender(new ArrayBuffer(0), { charset: "utf-8", txtIndexStore: f.store });
   await reader.parse(); assert.equal(prepares, 1); assert.equal(reader.txtBuffer.byteLength, 0); reader.removeContent();
 });
+
+test("closing during asynchronous prepare cannot resurrect a book or source references", async () => {
+  const f=fixture("第一章\n正文");let finish;
+  const ready=actual.buildPersistentTxtIndex(f.bytes,actual.decodeTxtSource(f.bytes,"utf-8"));
+  f.store.prepare=()=>new Promise(resolve=>{finish=resolve;});
+  const reader=new TxtRender(new ArrayBuffer(0),{charset:"utf-8",txtIndexStore:f.store});
+  const pending=reader.parse(),rejected=assert.rejects(pending,/cancelled/);
+  while (!finish) await new Promise(resolve=>setImmediate(resolve));
+  reader.removeContent();reader.removeContent();finish(ready);await rejected;
+  assert.equal(reader.book,null);assert.equal(f.closed(),1);assert.equal(reader.txtIndex,undefined);
+});

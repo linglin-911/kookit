@@ -1,3 +1,4 @@
+import { TxtTextLRU } from "./txtResources";
 import type { TxtBlockView } from "../libs/txtWindowAnchors";
 import type { PersistentTxtChapter } from "../libs/txtIndex";
 import type { TxtCheckpoint } from "../libs/txtBlocks";
@@ -32,7 +33,7 @@ interface Options {
     windowChanged?: () => void;
     error: (error: unknown) => void;
 }
-/** One owner, one in-flight range, no Blob/HTML cache. The sparse directory is
+/** One owner, one in-flight range, bounded decoded-text LRU and no Blob/HTML cache. The sparse directory is
  * metadata only; a deep chapter/block jump never decodes preceding source. */
 export class TxtWindowManager {
     private blocks: TxtWindowBlock[] = [];
@@ -54,6 +55,8 @@ export class TxtWindowManager {
     private root: HTMLElement;
     private layoutSize = { width: 0, height: 0 };
     private reads: Promise<unknown> = Promise.resolve();
+    private cache = new TxtTextLRU(512 * 1024);
+    private activeReads = 0;
     selectionLimited = false;
     constructor(private options: Options) {
         const { chapters, checkpoints, doc, element } = options;
@@ -159,32 +162,32 @@ export class TxtWindowManager {
             return;
         this.frame = requestAnimationFrame(() => { this.frame = 0; this.emitPosition(); void this.fill().catch(this.options.error); });
     };
-    private async load(index: number, token: number) {
-        const block = this.blocks[index], chapter = this.options.chapters[block.chapter];
+    private readText(index: number, valid: () => boolean): Promise<string | undefined> {
         const request = this.reads.then(async () => {
-            if (this.dead || token !== this.token)
-                return undefined;
-            return this.options.read(chapter, block.byteStart - chapter.byteStart, block.byteEnd - block.byteStart);
+            if (this.dead || !valid()) return undefined;
+            const hit = this.cache.get(index);
+            if (hit !== undefined) return hit;
+            const block = this.blocks[index], chapter = this.options.chapters[block.chapter];
+            this.activeReads++;
+            try {
+                const bytes = await this.options.read(chapter, block.byteStart - chapter.byteStart, block.byteEnd - block.byteStart);
+                if (this.dead || !valid()) return undefined;
+                if (bytes.length !== block.byteEnd - block.byteStart) throw Error("Incomplete TXT window block");
+                const text = new TextDecoder(this.options.encoding, { fatal: true, ignoreBOM: true }).decode(bytes).replace(/\r\n?/g, "\n");
+                if (text.length !== block.end - block.start) throw Error("TXT window block coordinates changed");
+                this.cache.set(index, text);
+                return text;
+            } finally { this.activeReads--; }
         });
-        this.reads = request.catch(() => { });
-        let bytes: Uint8Array | undefined;
-        try {
-            bytes = await request;
-        }
-        catch (error) {
-            if (this.dead || token !== this.token)
-                return;
-            throw error;
-        }
-        if (this.dead || token !== this.token)
-            return;
-        if (!bytes)
-            return;
-        if (bytes.length !== block.byteEnd - block.byteStart)
-            throw Error("Incomplete TXT window block");
-        const text = new TextDecoder(this.options.encoding, { fatal: true, ignoreBOM: true }).decode(bytes).replace(/\r\n?/g, "\n");
-        if (text.length !== block.end - block.start)
-            throw Error("TXT window block coordinates changed");
+        this.reads = request.then(() => undefined, () => undefined);
+        return request;
+    }
+    private async load(index: number, token: number) {
+        let text: string | undefined;
+        try { text = await this.readText(index, () => token === this.token); }
+        catch (error) { if (this.dead || token !== this.token) return; throw error; }
+        if (text === undefined || this.dead || token !== this.token) return;
+        const block = this.blocks[index];
         const node = this.options.doc.createElement("span");
         node.dataset.txtBlock = String(index);
         node.dataset.txtStart = String(block.start);
@@ -268,8 +271,9 @@ export class TxtWindowManager {
         this.compensate(anchor);
         return true;
     }
-    record() { this.emitPosition(); }
+    record() { if (!this.dead) this.emitPosition(); }
     async fill() {
+        if (this.dead) return;
         if (this.busy) {
             this.again = true;
             return;
@@ -301,6 +305,7 @@ export class TxtWindowManager {
                     break;
                 this.mount(m);
             }
+            if (this.dead || token !== this.token) return;
             this.emitPosition();
             const key = this.key;
             if (key !== this.lastWindow) { this.lastWindow = key; this.options.windowChanged?.(); }
@@ -314,6 +319,7 @@ export class TxtWindowManager {
         }
     }
     async jump(chapter: number, offset = 0) {
+        if (this.dead) return;
         const target = this.options.chapters[chapter];
         if (!target || !Number.isSafeInteger(offset) || offset < 0 || offset > target.end - target.start)
             throw Error("Invalid TXT window target");
@@ -358,39 +364,40 @@ export class TxtWindowManager {
     get sourceBlocks() { return this.blocks; }
     get closed() { return this.dead; }
     async *readBlocks(chapter: number, offset = 0, valid: () => boolean = () => true) {
+        if (this.dead) return;
         const current = this.options.chapters[chapter];
         if (!current) return;
         const first = this.chapterBlocks[chapter], last = this.chapterBlocks[chapter + 1] ?? this.blocks.length;
         for (let i = first; i < last && !this.dead && valid(); i++) {
             const block = this.blocks[i]; if (block.end <= current.start + offset) continue;
-            const request = this.reads.then(async () => {
-                if (this.dead || !valid()) return undefined;
-                return this.options.read(current,block.byteStart-current.byteStart,block.byteEnd-block.byteStart);
-            });
-            this.reads = request.catch(() => {});
-            const bytes = await request; if (!bytes || this.dead || !valid()) return;
-            if (bytes.length !== block.byteEnd - block.byteStart) throw Error("Incomplete TXT text range");
-            const text = new TextDecoder(this.options.encoding,{fatal:true,ignoreBOM:true}).decode(bytes).replace(/\r\n?/g,"\n");
-            if (text.length !== block.end - block.start) throw Error("TXT text range coordinates changed");
+            const text = await this.readText(i, valid);
+            if (text === undefined || this.dead || !valid()) return;
             yield { ...block, text };
         }
     }
     async move(direction: number) {
         await this.fill();
+        if (this.dead) return;
         this.options.element.scrollBy(0, direction * (this.options.element.clientHeight - 50));
         this.schedule();
     }
-    get stats() { return { ...TXT_WINDOW_BUDGET, mountedBlocks: this.mounted.length, mountedCharacters: this.mounted.reduce((n, m) => n + m.block.end - m.block.start, 0), mountedChapters: new Set(this.mounted.map(m => m.block.chapter)).size, nodes: this.nodeCount(), selectionLimited: this.selectionLimited }; }
+    get stats() { return { ...TXT_WINDOW_BUDGET, mountedBlocks: this.mounted.length, mountedCharacters: this.mounted.reduce((n, m) => n + m.block.end - m.block.start, 0), mountedChapters: new Set(this.mounted.map(m => m.block.chapter)).size, nodes: this.dead ? 0 : this.nodeCount(), ...this.cache.stats, activeReads: this.activeReads, observers: this.dead ? 0 : 1, listeners: this.dead ? 0 : 3, animationFrames: this.frame ? 1 : 0, selectionLimited: this.selectionLimited }; }
     destroy() {
+        if (this.dead) return;
         this.dead = true;
         this.token++;
-        cancelAnimationFrame(this.frame);
+        cancelAnimationFrame(this.frame); this.frame = 0; this.again = false;
+        this.cache.clear();
         this.options.element.style.overflowAnchor = "";
         this.options.element.removeEventListener("scroll", this.schedule);
         this.options.doc.removeEventListener("selectionchange", this.schedule);
         this.options.doc.fonts?.removeEventListener("loadingdone", this.layoutChanged);
         this.observer.disconnect();
-        this.root.remove();
+        this.root.replaceChildren(); this.root.remove();
+        this.options.read = async () => { throw Error("TXT window is closed"); };
+        this.options.changed = () => {}; this.options.windowChanged = undefined; this.options.error = () => {};
+        this.options.chapters = []; this.options.checkpoints = [];
+        this.reads = Promise.resolve();
         this.mounted = [];
         this.blocks = [];
         this.chapterBlocks = [];

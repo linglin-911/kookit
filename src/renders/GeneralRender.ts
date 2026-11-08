@@ -834,6 +834,12 @@ class GeneralRender extends EventEmitter {
     await this.record();
     this.trigger("rendered");
   }
+  protected releaseChapterCaches() {
+    this.chapterSizeCache = null; this.chapterSizeCacheWeights = null;
+    this.chapterSizeCachePageSize = null; this.chapterSizeCacheReaderMode = null;
+    this.flattenedChapterSource = null; this.flattenedChapterLength = 0;
+    this.flattenChapters = [];
+  }
   removeContent() {
     this.element.innerHTML = "";
   }
