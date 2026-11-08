@@ -723,7 +723,7 @@ export const highlightRange = (
     // to the normal text-node splitting logic so the new highlight becomes
     // innermost for its specific portion of text.
     const existingNoteParent = textNode.parentElement?.closest?.(
-      ".kookit-note[data-key]"
+      ".kookit-note[data-key], .kookit-note-icon[data-key]"
     ) as HTMLElement | null;
     if (
       existingNoteParent &&
@@ -825,7 +825,7 @@ export const highlightRange = (
       "mousemove",
       (e: MouseEvent) => {
         const target = (e.target as HTMLElement)?.closest?.(
-          ".kookit-note[data-key]"
+          ".kookit-note[data-key], .kookit-note-icon[data-key]"
         ) as HTMLElement | null;
         if (target) {
           doc.body.style.cursor = "pointer";
@@ -859,7 +859,7 @@ export const highlightRange = (
         )
           return;
         const target = (e.target as HTMLElement)?.closest?.(
-          ".kookit-note[data-key]"
+          ".kookit-note[data-key], .kookit-note-icon[data-key]"
         ) as HTMLElement | null;
         if (target) {
           handleNoteClick({ target });
@@ -876,7 +876,7 @@ export const highlightRange = (
         // For touch events, use elementFromPoint to find the target
         const el = doc.elementFromPoint(touch.clientX, touch.clientY);
         const target = (el as HTMLElement)?.closest?.(
-          ".kookit-note[data-key]"
+          ".kookit-note[data-key], .kookit-note-icon[data-key]"
         ) as HTMLElement | null;
         let selectedText = "";
         if (doc && doc.getSelection()) {

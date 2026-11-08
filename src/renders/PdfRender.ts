@@ -880,7 +880,7 @@ class PdfRender extends GeneralRender {
           page,
           scale,
           subDoc,
-          item.notes !== "",
+          item.hasNote ?? item.notes !== "",
           this.isMobile === "yes",
           item.notes || ""
         );

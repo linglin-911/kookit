@@ -31,6 +31,7 @@ export interface PersistentTxtIndex extends TxtChapterIndex {
   byteLength: number;
 }
 export interface TxtIndexStore {
+  sourceTicket?: string;
   load: (force: boolean) => Promise<PersistentTxtIndex | null>;
   save: (index: PersistentTxtIndex) => Promise<void>;
   readSource?: () => Promise<Uint8Array>;

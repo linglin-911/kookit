@@ -1,3 +1,5 @@
+import { mappedTxtHtml } from "./txtAnchors";
+import type { PersistentTxtChapter } from "./txtIndex";
 import {
   buildTxtChapterIndex,
   cleanText,
@@ -60,7 +62,9 @@ export const makeHtmlBook = (
           ) {
             throw new Error("TXT chapter does not match indexed UTF-16 length");
           }
-          const chapterHtml = txtToHtml(
+          const chapterHtml = loadTxtChapter
+            ? mappedTxtHtml(chapterSource, chapter as PersistentTxtChapter)
+            : txtToHtml(
             chapterSource,
             parserRegex,
             chapter.fixedChunk
@@ -103,6 +107,7 @@ export const makeHtmlBook = (
       book.getCover = () => "";
       book.sections = chapterList.map((item) => ({
         id: item.index,
+        chapter: item,
         label: item.label,
         href: "title" + item.index,
         load: () => load(item.index),

@@ -1,3 +1,6 @@
+import { selectedTxtAnchor, txtRange } from "../libs/txtAnchors";
+import { clearHighlight, highlightRange } from "../utils/noteUtil";
+import type { PersistentTxtChapter } from "../libs/txtIndex";
 import { createIframe, handleLayout } from "../utils/layoutUtil";
 import GeneralRender from "./GeneralRender";
 import { makeHtmlBook } from "../libs/html";
@@ -160,6 +163,33 @@ class TxtRender extends GeneralRender {
       });
       finish({ failed: true });
       throw error;
+    }
+  }
+  getTxtChapterSnapshot(): PersistentTxtChapter | undefined {
+    return this.book?.sections?.[Number(this.tempLocation?.chapterDocIndex || 0)]?.chapter;
+  }
+  getAnnotationAnchor() {
+    const chapter=this.getTxtChapterSnapshot(),doc=this.getDocument();
+    if(!chapter||!doc||!this.txtIndexStore?.sourceTicket)throw new Error("TXT source is unavailable for annotations");
+    return {format:"TXT",sourceTicket:this.txtIndexStore.sourceTicket,...selectedTxtAnchor(doc,chapter)};
+  }
+  async renderHighlighters(notes: Array<{key:string;entityKey?:string;bindingId?:string;color:string;hasNote?:boolean;notes?:string;txtAnchor?:{start:number;end:number}}>,handleNoteClick:(event:Event)=>void) {
+    if(!this.txtIndexStore?.sourceTicket)return super.renderHighlighters(notes,handleNoteClick);
+    const doc=this.getDocument(),chapter=this.getTxtChapterSnapshot();if(!doc||!chapter)return;
+    clearHighlight(doc,this.diagnosticTraceId);
+    // Resolve against the current DOM: wrapping an earlier overlapping range
+    // mutates live Range endpoints.
+    for(const item of notes.filter(item=>item.txtAnchor)){
+      const range=txtRange(doc,chapter,item.txtAnchor!.start,item.txtAnchor!.end);
+      highlightRange({nativeRange:range},item.color,item.bindingId||item.key,handleNoteClick,doc,!!item.hasNote,false,"");
+    }
+    doc.getSelection()?.removeAllRanges();
+    for(const item of notes){
+      for(const element of Array.from(doc.querySelectorAll<HTMLElement>("[data-key]"))){
+        if(element.dataset.key===(item.bindingId||item.key)){
+          element.dataset.noteKey=item.entityKey||item.key;element.dataset.bindingId=item.bindingId||item.key;
+        }
+      }
     }
   }
   removeContent() {

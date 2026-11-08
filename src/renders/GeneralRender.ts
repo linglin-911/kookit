@@ -1576,7 +1576,7 @@ class GeneralRender extends EventEmitter {
       range: JSON.parse(item.range),
       colorCode: item.color,
       noteKey: item.key,
-      isNote: item.notes !== "",
+      isNote: item.hasNote ?? item.notes !== "",
       noteContent: item.notes || "",
     }));
 
