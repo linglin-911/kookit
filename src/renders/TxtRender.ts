@@ -165,6 +165,27 @@ class TxtRender extends GeneralRender {
       throw error;
     }
   }
+  async getTxtDirectory() {
+    if (this.txtIndexStore?.readDirectory) return this.txtIndexStore.readDirectory();
+    // Volatile/unsupported encodings keep their existing parser; directory
+    // access still never invokes a section loader or builds body HTML.
+    return {
+      generation: null,
+      chapters: this.book.sections.map((section, index: number) => ({
+        chapterId: section.chapter?.chapterId || `volatile-${index}`,
+        index,
+        label: section.label || "",
+      })),
+    };
+  }
+  async goToTxtChapter(chapterId: string, index: number) {
+    const section = this.book?.sections?.[index];
+    if (!Number.isSafeInteger(index) || index < 0 || !section ||
+      (section.chapter?.chapterId || `volatile-${index}`) !== chapterId) {
+      throw new Error("TXT directory belongs to a different index generation");
+    }
+    await this.goToChapterDocIndex(index);
+  }
   getTxtChapterSnapshot(): PersistentTxtChapter | undefined {
     return this.book?.sections?.[Number(this.tempLocation?.chapterDocIndex || 0)]?.chapter;
   }

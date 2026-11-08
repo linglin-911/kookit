@@ -30,7 +30,12 @@ export interface PersistentTxtIndex extends TxtChapterIndex {
   textLength: number;
   byteLength: number;
 }
+export interface TxtDirectory {
+  generation: string | null;
+  chapters: { chapterId: string; index: number; label: string }[];
+}
 export interface TxtIndexStore {
+  readDirectory?: () => Promise<TxtDirectory>;
   sourceTicket?: string;
   load: (force: boolean) => Promise<PersistentTxtIndex | null>;
   save: (index: PersistentTxtIndex) => Promise<void>;

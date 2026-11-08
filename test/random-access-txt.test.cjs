@@ -125,3 +125,23 @@ test("random HTML adapter rejects incompatible normalized coordinates", async ()
   await assert.rejects(() => reader.book.sections[0].load(), /UTF-16 length/);
   reader.removeContent();
 });
+
+test("TXT directory and ID navigation never load intermediate bodies", async () => {
+  const f = fixture("第一章\n正文甲\n第二章\n正文乙");
+  const reader = new TxtRender(new ArrayBuffer(0), { charset: "utf-8", txtIndexStore: f.store });
+  await reader.parse();
+  const volatile = await reader.getTxtDirectory();
+  assert.equal(volatile.chapters.length, 2);
+  assert.deepEqual(f.reads, []);
+  const fromDatabase = { generation: "pinned", chapters: volatile.chapters };
+  f.store.readDirectory = async () => fromDatabase;
+  assert.equal(await reader.getTxtDirectory(), fromDatabase);
+  const targets = [];
+  reader.goToChapterDocIndex = async (index) => targets.push(index);
+  await reader.goToTxtChapter(volatile.chapters[1].chapterId, 1);
+  await assert.rejects(() => reader.goToTxtChapter("other-generation", 1), /different index generation/);
+  await assert.rejects(() => reader.goToTxtChapter(volatile.chapters[1].chapterId, -1));
+  assert.deepEqual(targets, [1]);
+  assert.deepEqual(f.reads, []);
+  reader.removeContent();
+});
