@@ -35,6 +35,7 @@ export interface TxtDirectory {
   chapters: { chapterId: string; index: number; label: string }[];
 }
 export interface TxtIndexStore {
+  prepare?: () => Promise<PersistentTxtIndex>;
   readDirectory?: () => Promise<TxtDirectory>;
   sourceTicket?: string;
   load: (force: boolean) => Promise<PersistentTxtIndex | null>;
@@ -198,9 +199,9 @@ export const buildPersistentTxtIndex = (
   };
 };
 
-/** Cold rebuild data is confined to this call. Return only lightweight metadata;
- * no decoded book string or original buffer is captured by chapter loaders.
- * Streaming/background index construction is intentionally a later stage.
+/** Desktop hosts prepare via a streaming Worker and return metadata only.
+ * readSource remains a legacy adapter for callers without the Worker protocol.
+ * Neither path captures source text in a chapter loader.
  */
 export const prepareTxtIndex = async (
   store: TxtIndexStore,
@@ -210,6 +211,7 @@ export const prepareTxtIndex = async (
 ): Promise<PersistentTxtIndex> => {
   const cached = await store.load(force);
   if (cached) return cached;
+  if (store.prepare) return store.prepare();
   if (!store.readSource) throw new Error("TXT source reader is unavailable");
   const bytes = await store.readSource();
   const source = decodeTxtSource(bytes, charset);

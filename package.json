@@ -20,7 +20,8 @@
   "minify": "dist/kookit.min.js",
   "scripts": {
     "dev": "rollup -c -w",
-    "build": "rollup -c",
+    "build": "rollup -c && node scripts/build-desktop.mjs --scanner-only",
+    "build:desktop": "node scripts/build-desktop.mjs",
     "prebuild:types": "rimraf ./build",
     "build:types": "tsc -p ./tsconfig.json --outDir build --declaration true && api-extractor run",
     "predocs": "rimraf ./docs",

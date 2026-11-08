@@ -76,7 +76,7 @@ class TxtRender extends GeneralRender {
       refresh: bookLocation?.refresh === true,
     });
     try {
-      if (this.txtIndexStore?.readChapter && this.txtIndexStore.readSource) {
+      if (this.txtIndexStore?.readChapter && (this.txtIndexStore.prepare || this.txtIndexStore.readSource)) {
         // The desktop random-access path never retains a whole-file buffer or
         // decoded book string, including after a cold index rebuild.
         this.txtBuffer = new ArrayBuffer(0);

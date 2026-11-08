@@ -145,3 +145,13 @@ test("TXT directory and ID navigation never load intermediate bodies", async () 
   assert.deepEqual(f.reads, []);
   reader.removeContent();
 });
+
+test("desktop hosts prepare a streamed index without exposing readSource", async () => {
+  const f = fixture("第一章\\n正文");
+  const index = actual.buildPersistentTxtIndex(f.bytes, actual.decodeTxtSource(f.bytes, "utf-8"));
+  delete f.store.readSource;
+  let prepares = 0;
+  f.store.prepare = async () => { prepares++; return index; };
+  const reader = new TxtRender(new ArrayBuffer(0), { charset: "utf-8", txtIndexStore: f.store });
+  await reader.parse(); assert.equal(prepares, 1); assert.equal(reader.txtBuffer.byteLength, 0); reader.removeContent();
+});
