@@ -115,6 +115,8 @@ class TxtRender extends GeneralRender {
         chapterCount: this.chapterList.length,
         chapterDocCount: this.chapterDocList.length,
         iframeReady: true,
+        continuousWindow: !!this.txtWindow,
+        blockCoordinates: !!this.txtIndex?.checkpoints,
       });
     } catch (error) {
       diagnosticError("TXT", "renderTo:failed", error, {
@@ -137,12 +139,17 @@ class TxtRender extends GeneralRender {
         // decoded book string, including after a cold index rebuild.
         this.txtBuffer = new ArrayBuffer(0);
         const store = this.txtIndexStore;
-        const index = await prepareTxtIndex(
+        let index = await prepareTxtIndex(
           store,
           this.charset,
           this.parserRegex,
           bookLocation?.refresh === true
         );
+        // Old valid caches lacked sparse blocks. A supported scroll session
+        // requests a verified, same-generation metadata upgrade before mounting,
+        // rather than silently re-entering the replace-and-reset chapter path.
+        if (this.continuousScroll && !index.checkpoints && this.txtIndexStore.ensureBlocks)
+          index = await this.txtIndexStore.ensureBlocks();
         this.txtIndex = index;
         this.txtChapterById = new Map(index.chapters.map(chapter=>[chapter.chapterId,chapter]));
         this.book?.destroy?.();

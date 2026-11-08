@@ -38,6 +38,7 @@ export interface TxtDirectory {
   chapters: { chapterId: string; index: number; label: string }[];
 }
 export interface TxtIndexStore {
+  ensureBlocks?: () => Promise<PersistentTxtIndex>;
   prepare?: () => Promise<PersistentTxtIndex>;
   readDirectory?: () => Promise<TxtDirectory>;
   sourceTicket?: string;
