@@ -37,6 +37,17 @@ export class TxtWindowHighlights {
     let processed = 0, chunkStarted = performance.now();
     this.click = click; this.blocks = blocks;
     const active = new Set<string>();
+    // Prune replaced datasets before adding new IDs. Otherwise repeatedly
+    // superseded paints could accumulate partial datasets until scrolling stops.
+    const requested = new Set(notes.map(note => note.bindingId || note.key));
+    for (const [id, entry] of this.entries) {
+      if (++processed % 256 === 0 && performance.now() - chunkStarted >= 8) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        if (revision !== this.revision) return;
+        chunkStarted = performance.now();
+      }
+      if (!requested.has(id)) { this.release(entry); this.entries.delete(id); }
+    }
     for (const note of notes) {
       if (++processed % 256 === 0 && performance.now() - chunkStarted >= 8) {
         await new Promise<void>(resolve => setTimeout(resolve, 0));
@@ -126,7 +137,9 @@ export class TxtWindowHighlights {
       if (references) group.ranges.set(range, references);
       else { group.ranges.delete(range); group.native.delete(range); }
     }
-    group.references--;
+    if (--group.references === 0) {
+      this.api.CSS.highlights.delete(group.name); this.groups.delete(entry.group); this.stylesDirty = true;
+    }
   }
   private handleClick = (event: MouseEvent) => {
     if (!this.doc.getSelection()?.isCollapsed || !this.click) return;
