@@ -1,3 +1,4 @@
+import { checkpointTxtStream, TxtCheckpoint } from "./txtBlocks";
 import { isTitle } from "./textProcessor";
 import { TXT_INDEX_CONTRACT, PersistentTxtChapter } from "./txtIndex";
 
@@ -139,7 +140,8 @@ export async function scanTxtStream(chunks: AsyncIterable<Uint8Array>, options: 
     textStart = line.next; byteStart = line.byteNext; length = 0;
     raw = ""; probe = ""; probeLength = 0; probeMeaningfulLength = 0; trimmedLength = 0; nonLeadingLength = 0; leading = true; first = ""; last = "";
   };
-  for await (let chunk of chunks) {
+  const checkpoints: TxtCheckpoint[] = [];
+  for await (let chunk of checkpointTxtStream(chunks, encoding, bomBytes, checkpoints)) {
     if (carry.length) { const joined = new Uint8Array(carry.length + chunk.length); joined.set(carry); joined.set(chunk, carry.length); chunk = joined; }
     const usable = chunk.length - chunk.length % stride;
     carry = chunk.slice(usable);
@@ -172,6 +174,6 @@ export async function scanTxtStream(chunks: AsyncIterable<Uint8Array>, options: 
       next: textStart, byteNext: byteLength, label: "", title: false, first: "", tail: "", blank: true };
     const part = section(empty); part.lines = 0; await emit(part, false, true);
   }
-  return { contract: { ...TXT_INDEX_CONTRACT }, encoding, bomBytes, byteLength,
+  return { checkpoints, contract: { ...TXT_INDEX_CONTRACT }, encoding, bomBytes, byteLength,
     textLength: textStart, lineCount, mode: headings ? "chapter-headings" as const : "fixed-500-lines" as const };
 }

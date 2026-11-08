@@ -1,3 +1,5 @@
+import { TxtWindowManager } from "../utils/txtWindowManager";
+import type { PersistentTxtIndex } from "../libs/txtIndex";
 import { selectedTxtAnchor, txtRange } from "../libs/txtAnchors";
 import { clearHighlight, highlightRange } from "../utils/noteUtil";
 import type { PersistentTxtChapter } from "../libs/txtIndex";
@@ -16,6 +18,11 @@ import { getCache } from "../libs/cache.js";
 import { beginDiagnostic, diagnosticError } from "../utils/diagnostics";
 
 class TxtRender extends GeneralRender {
+  txtWindow?: TxtWindowManager;
+  private continuousScroll: boolean;
+  private onTxtWindowPosition?: (position: Record<string, unknown>) => void;
+  private txtIndex?: PersistentTxtIndex;
+  private txtGeneration: string | null = null;
   txtBuffer: ArrayBuffer;
   charset: string;
   parserRegex: string;
@@ -26,6 +33,8 @@ class TxtRender extends GeneralRender {
     this.charset = config.charset;
     this.parserRegex = config.parserRegex;
     this.txtIndexStore = config.txtIndexStore;
+    this.onTxtWindowPosition = config.onTxtWindowPosition;
+    this.continuousScroll = config.txtContinuousScroll === true && config.readerMode === "scroll";
   }
   async renderTo(element: HTMLElement, bookLocation?: any): Promise<void> {
     const finish = beginDiagnostic("TXT", "renderTo", {
@@ -55,6 +64,25 @@ class TxtRender extends GeneralRender {
         );
       }
       handleLayout(element, this.readerMode, doc);
+      if (this.continuousScroll && this.txtIndex?.checkpoints && this.txtIndexStore?.readChapterRange) {
+        this.txtGeneration = (await this.getTxtDirectory()).generation;
+        this.txtWindow = new TxtWindowManager({ doc, iframe: this.getIframe()!, element,
+          chapters: this.txtIndex.chapters, checkpoints: this.txtIndex.checkpoints,
+          generation: this.txtGeneration, encoding: this.txtIndex.encoding,
+          read: this.txtIndexStore.readChapterRange,
+          changed: position => {
+            const chapter = this.txtIndex!.chapters[position.chapter];
+            const previous = this.tempLocation.txtWindow;
+            Object.assign(this.tempLocation, { chapterDocIndex: String(position.chapter), chapterTitle: chapter.label,
+              chapterHref: `title${position.chapter}`, count: "0",
+              txtWindow: { version: 1, chapterId: position.chapterId, generation: position.generation, offset: position.offset },
+              percentage: String((chapter.start + position.offset) / Math.max(1, this.txtIndex!.textLength)) });
+            if (previous?.chapterId !== position.chapterId || previous?.offset !== position.offset)
+              this.onTxtWindowPosition?.({ ...this.tempLocation });
+          },
+          error: error => { diagnosticError("TXT", "window:failed", error, { traceId: this.diagnosticTraceId }); this.trigger("txt-window-error"); },
+        });
+      }
       finish({
         chapterCount: this.chapterList.length,
         chapterDocCount: this.chapterDocList.length,
@@ -87,6 +115,7 @@ class TxtRender extends GeneralRender {
           this.parserRegex,
           bookLocation?.refresh === true
         );
+        this.txtIndex = index;
         this.book?.destroy?.();
         this.book = makeHtmlBook(
           "",
@@ -165,6 +194,28 @@ class TxtRender extends GeneralRender {
       throw error;
     }
   }
+  isTxtWindowActive() { return !!this.txtWindow; }
+  async goToChapter(index: number, href: string, title: string) {
+    if (!this.txtWindow) return super.goToChapter(index, href, title);
+    await this.txtWindow.jump(Number(index)); this.trigger("rendered");
+  }
+  async goToPosition(value: string) {
+    if (!this.txtWindow) return super.goToPosition(value);
+    const saved = JSON.parse(value), index = Number(saved.chapterDocIndex || 0), chapter = this.txtIndex?.chapters[index];
+    if (!chapter) throw new Error("TXT saved chapter is unavailable");
+    if (saved.txtWindow && (saved.txtWindow.version !== 1 || saved.txtWindow.chapterId !== chapter.chapterId || saved.txtWindow.generation !== this.txtGeneration))
+      throw new Error("TXT saved window belongs to another index generation");
+    // Legacy count is a DOM paragraph ordinal, never a UTF-16 offset. Preserve
+    // safe chapter-level fallback; phase 8 supplies exact legacy text/DOM mapping.
+    await this.txtWindow.jump(index, saved.txtWindow?.offset ?? 0);
+    this.trigger("rendered");
+  }
+  async record() {
+    if (!this.txtWindow) return super.record();
+    this.txtWindow.record(); this.trigger("page-changed");
+  }
+  async next() { if (this.txtWindow) return this.txtWindow.move(1); return super.next(); }
+  async prev() { if (this.txtWindow) return this.txtWindow.move(-1); return super.prev(); }
   async getTxtDirectory() {
     if (this.txtIndexStore?.readDirectory) return this.txtIndexStore.readDirectory();
     // Volatile/unsupported encodings keep their existing parser; directory
@@ -190,11 +241,13 @@ class TxtRender extends GeneralRender {
     return this.book?.sections?.[Number(this.tempLocation?.chapterDocIndex || 0)]?.chapter;
   }
   getAnnotationAnchor() {
+    if (this.txtWindow) throw new Error("TXT window annotations require the phase-8 mapping adapter");
     const chapter=this.getTxtChapterSnapshot(),doc=this.getDocument();
     if(!chapter||!doc||!this.txtIndexStore?.sourceTicket)throw new Error("TXT source is unavailable for annotations");
     return {format:"TXT",sourceTicket:this.txtIndexStore.sourceTicket,...selectedTxtAnchor(doc,chapter)};
   }
   async renderHighlighters(notes: Array<{key:string;entityKey?:string;bindingId?:string;color:string;hasNote?:boolean;notes?:string;txtAnchor?:{start:number;end:number}}>,handleNoteClick:(event:Event)=>void) {
+    if (this.txtWindow) return; // Phase 8 owns visible-block mapping and incremental highlights.
     if(!this.txtIndexStore?.sourceTicket)return super.renderHighlighters(notes,handleNoteClick);
     const doc=this.getDocument(),chapter=this.getTxtChapterSnapshot();if(!doc||!chapter)return;
     clearHighlight(doc,this.diagnosticTraceId);
@@ -214,6 +267,7 @@ class TxtRender extends GeneralRender {
     }
   }
   removeContent() {
+    this.txtWindow?.destroy(); this.txtWindow = undefined; this.txtIndex = undefined;
     super.removeContent();
     this.book?.destroy?.();
     this.book = null;
@@ -232,7 +286,17 @@ class TxtRender extends GeneralRender {
       bufferBytes: this.txtBuffer.byteLength,
     });
     try {
+      const previousWindow = this.txtWindow;
+      const previousChapter = Number(this.tempLocation.chapterDocIndex || 0);
       await this.parse({ refresh: true });
+      if (previousWindow) {
+        previousWindow.destroy(); this.txtWindow = undefined;
+        await this.renderTo(this.element);
+        await this.goToChapterDocIndex(Math.min(previousChapter, this.chapterDocList.length - 1));
+        this.chapterSizeCache = null;
+        finish({ chapterCount: this.chapterList.length, chapterDocCount: this.chapterDocList.length });
+        return this.chapterList;
+      }
       const parser = new GeneralParser(this.book);
       this.chapterList = await parser.getChapter(this.book.toc);
       this.chapterDocList = await parser.getChapterDoc();

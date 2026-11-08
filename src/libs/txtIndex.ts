@@ -6,6 +6,8 @@ import {
 
 // Shared wire contract with Koodo's txt-index-store.js. Bump when parsing,
 // normalization, feature extraction or offset semantics change.
+import { buildTxtCheckpoints } from "./txtBlocks";
+
 export const TXT_INDEX_CONTRACT = {
   parserVersion: 1,
   indexVersion: 1,
@@ -23,6 +25,7 @@ export interface PersistentTxtChapter extends TxtChapterIndexEntry {
   recognition: "heading" | "preamble" | "fixed";
 }
 export interface PersistentTxtIndex extends TxtChapterIndex {
+  checkpoints?: import("./txtBlocks").TxtCheckpoint[];
   chapters: PersistentTxtChapter[];
   contract: typeof TXT_INDEX_CONTRACT;
   encoding: string;
@@ -42,6 +45,7 @@ export interface TxtIndexStore {
   save: (index: PersistentTxtIndex) => Promise<void>;
   readSource?: () => Promise<Uint8Array>;
   readChapter?: (chapter: PersistentTxtChapter) => Promise<string>;
+  readChapterRange?: (chapter: PersistentTxtChapter, offset: number, length: number) => Promise<Uint8Array>;
   close?: () => Promise<void>;
 }
 
@@ -139,6 +143,7 @@ export const buildPersistentTxtIndex = (
   };
   return {
     ...index,
+    checkpoints: buildTxtCheckpoints(bytes, encoding, bomBytes),
     contract: { ...TXT_INDEX_CONTRACT },
     encoding,
     bomBytes,
