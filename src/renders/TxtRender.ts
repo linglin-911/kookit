@@ -110,7 +110,8 @@ class TxtRender extends GeneralRender {
           read: this.txtIndexStore.readChapterRange,
           windowChanged: () => {
             this.clearWindowAuxiliary();
-            this.windowHighlights?.update(this.windowNotes, this.txtWindow?.views || [], this.windowClick);
+            void this.windowHighlights?.update(this.windowNotes, this.txtWindow?.views || [], this.windowClick)
+              .catch(error => diagnosticError("TXT", "window-highlights:failed", error, { traceId: this.diagnosticTraceId }));
             this.trigger("txt-window-changed");
           },
           changed: position => {
@@ -489,7 +490,7 @@ class TxtRender extends GeneralRender {
     if (this.txtWindow) {
       this.windowNotes = notes.filter(note => note.txtAnchor).map(note => ({ ...note, chapterIndex: note.chapterIndex ?? Number(this.tempLocation.chapterDocIndex || 0) }));
       this.windowClick = handleNoteClick;
-      this.windowHighlights!.update(this.windowNotes, this.txtWindow.views, handleNoteClick); return;
+      await this.windowHighlights!.update(this.windowNotes, this.txtWindow.views, handleNoteClick); return;
     }
     if(this.disposed)return;
     if(!this.txtIndexStore?.sourceTicket)return super.renderHighlighters(notes,handleNoteClick);
