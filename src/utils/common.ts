@@ -33,7 +33,6 @@ export const buildHighlightStyleForType = (
   forPDFOverlay: boolean,
   isVertical?: boolean
 ): string => {
-  if (colorCode === "annotation-dots") return "background:transparent;text-decoration:underline dotted #888888 1px;text-underline-offset:3px;";
   let styleType: string = "background";
   let rawColor: string = "#FEF3CD";
   if (typeof colorCode === "number") {

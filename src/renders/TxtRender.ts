@@ -477,13 +477,6 @@ class TxtRender extends GeneralRender {
   getTxtChapterSnapshot(): PersistentTxtChapter | undefined {
     return this.book?.sections?.[Number(this.tempLocation?.chapterDocIndex || 0)]?.chapter;
   }
-  getTxtChapterAtPoint(x:number,y:number): PersistentTxtChapter | undefined {
-    const doc=this.getDocument();if(!doc)return undefined;
-    if(!this.txtWindow)return this.getTxtChapterSnapshot();
-    const caret=(doc as Document & {caretRangeFromPoint(x:number,y:number):Range|null}).caretRangeFromPoint(x,y);
-    if(!caret)return undefined;
-    try{return windowPoint(this.txtWindow.views,caret.startContainer,caret.startOffset).block.chapter;}catch{return undefined;}
-  }
   getAnnotationAnchor() {
     if (this.txtWindow) {
       if (!this.txtIndexStore?.sourceTicket) throw new Error("TXT source is unavailable for annotations");
@@ -507,7 +500,7 @@ class TxtRender extends GeneralRender {
     // mutates live Range endpoints.
     for(const item of notes.filter(item=>item.txtAnchor)){
       const range=txtRange(doc,chapter,item.txtAnchor!.start,item.txtAnchor!.end);
-      highlightRange({nativeRange:range},"annotation-dots",item.bindingId||item.key,handleNoteClick,doc,!!item.hasNote,false,"");
+      highlightRange({nativeRange:range},item.color,item.bindingId||item.key,handleNoteClick,doc,!!item.hasNote,false,"");
     }
     doc.getSelection()?.removeAllRanges();
     for(const item of notes){
