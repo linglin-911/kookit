@@ -748,7 +748,8 @@ class GeneralRender extends EventEmitter {
     }
   }
   getDocument(): Document | null {
-    let pageArea = document.getElementById("page-area");
+    // Each rendition owns its mount. Preview instances must never resolve the main reader iframe.
+    let pageArea = this.element || document.getElementById("page-area");
     if (!pageArea) return null;
     let iframe = pageArea.getElementsByTagName("iframe")[0];
     if (!iframe) return null;
@@ -759,7 +760,8 @@ class GeneralRender extends EventEmitter {
     return doc;
   }
   getIframe() {
-    let pageArea = document.getElementById("page-area");
+    // Each rendition owns its mount. Preview instances must never resolve the main reader iframe.
+    let pageArea = this.element || document.getElementById("page-area");
     if (!pageArea) return null;
     let iframe = pageArea.getElementsByTagName("iframe")[0];
     if (!iframe) return null;
