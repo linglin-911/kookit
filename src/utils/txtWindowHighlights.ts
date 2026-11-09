@@ -1,4 +1,4 @@
-import { buildHighlightStyleForType } from "./common";
+// UI-2: stored legacy styles remain data; reading bindings share one dotted cue.
 import { windowPoint, windowRange, TxtBlockView } from "../libs/txtWindowAnchors";
 
 export interface WindowNote {
@@ -71,8 +71,8 @@ export class TxtWindowHighlights {
             parts[index].node.contains(range.endContainer))) { old.note = note; continue; }
       const ranges = parts.map(block => this.rangeFor(block, Math.max(block.start, block.chapter.bodyStart + note.txtAnchor!.start), Math.min(block.end, block.chapter.bodyStart + note.txtAnchor!.end)));
       if (old) this.release(old);
-      const priority = Math.max(0, 1000000 - (note.txtAnchor.end - note.txtAnchor.start));
-      const groupKey = JSON.stringify([note.color, priority]);
+      const priority = 0;
+      const groupKey = "binding-dots";
       let group = this.groups.get(groupKey);
       if (!group) {
         const native = new this.api.Highlight(); native.priority = priority;
@@ -101,15 +101,9 @@ export class TxtWindowHighlights {
       this.api.CSS.highlights.delete(group.name); this.groups.delete(key); this.stylesDirty = true;
     }
     if (!this.stylesDirty) return;
-    // Canonicalize colors through CSSOM; no raw SQL/renderer string enters CSS syntax.
-    const rules = Array.from(this.groups.values()).map(group => {
-      const match = /^(background|underline|strikethrough|wavy)-(.+)$/.exec(group.color), type = match?.[1] || "background";
-      const probe = this.doc.createElement("span"); probe.style.color = match?.[2] || "#FEF3CD";
-      const color = probe.style.color || "#FEF3CD";
-      probe.style.cssText=buildHighlightStyleForType(`${type}-${/^#[0-9a-f]{3,8}$/i.test(match?.[2]||"")?match![2]:color}`,false,false);
-      const css=["background-color","color","text-decoration","text-decoration-color","text-decoration-style","text-decoration-thickness"].map(property=>`${property}:${probe.style.getPropertyValue(property)}`).join(";");
-      return `::highlight(${group.name}){${css}}`;
-    }).join("\n");
+    const rules = Array.from(this.groups.values()).map(group =>
+      `::highlight(${group.name}){background-color:transparent;text-decoration-line:underline;text-decoration-style:dotted;text-decoration-color:#888888;text-decoration-thickness:1px;text-underline-offset:3px}`
+    ).join("\n");
     if(this.style.textContent!==rules)this.style.textContent=rules;
     this.stylesDirty = false;
   }
