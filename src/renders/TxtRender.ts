@@ -108,6 +108,7 @@ class TxtRender extends GeneralRender {
           chapters: this.txtIndex.chapters, checkpoints: this.txtIndex.checkpoints,
           generation: this.txtGeneration, encoding: this.txtIndex.encoding,
           read: this.txtIndexStore.readChapterRange,
+          paintSelection: () => this.windowHighlights?.updateSelection(),
           windowChanged: () => {
             this.clearWindowAuxiliary();
             void this.windowHighlights?.update(this.windowNotes, this.txtWindow?.views || [], this.windowClick)

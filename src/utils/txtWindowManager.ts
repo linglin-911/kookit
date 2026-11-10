@@ -31,6 +31,7 @@ interface Options {
         generation: string | null;
     }) => void;
     windowChanged?: () => void;
+    paintSelection?: () => void;
     error: (error: unknown) => void;
 }
 /** One owner, one in-flight range, bounded decoded-text LRU and no Blob/HTML cache. The sparse directory is
@@ -76,7 +77,7 @@ export class TxtWindowManager {
         }
         this.root = doc.createElement("main");
         this.root.dataset.txtWindow = "true";
-        this.root.style.cssText = "white-space:pre-wrap;overflow-wrap:anywhere;overflow-anchor:none";
+        this.root.style.cssText = "white-space:pre-wrap;overflow-wrap:anywhere;overflow-anchor:none;position:relative;z-index:1";
         doc.body.style.overflowAnchor = "none";
         element.style.overflowAnchor = "none";
         this.root.style.paddingBottom = element.clientHeight + "px";
@@ -160,7 +161,7 @@ export class TxtWindowManager {
     private schedule = () => {
         if (this.dead || this.frame)
             return;
-        this.frame = requestAnimationFrame(() => { this.frame = 0; this.emitPosition(); void this.fill().catch(this.options.error); });
+        this.frame = requestAnimationFrame(() => { this.frame = 0; this.emitPosition(); this.options.paintSelection?.(); void this.fill().catch(this.options.error); });
     };
     private readText(index: number, valid: () => boolean): Promise<string | undefined> {
         const request = this.reads.then(async () => {
@@ -395,7 +396,7 @@ export class TxtWindowManager {
         this.observer.disconnect();
         this.root.replaceChildren(); this.root.remove();
         this.options.read = async () => { throw Error("TXT window is closed"); };
-        this.options.changed = () => {}; this.options.windowChanged = undefined; this.options.error = () => {};
+        this.options.changed = () => {}; this.options.windowChanged = undefined; this.options.paintSelection = undefined; this.options.error = () => {};
         this.options.chapters = []; this.options.checkpoints = [];
         this.reads = Promise.resolve();
         this.mounted = [];

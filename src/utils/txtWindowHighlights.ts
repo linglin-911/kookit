@@ -1,10 +1,12 @@
 import { buildHighlightStyleForType } from "./common";
+import { textBand, hitsText } from "./textHitGeometry";
 import { windowPoint, windowRange, TxtBlockView } from "../libs/txtWindowAnchors";
 
 export interface WindowNote {
   key: string; entityKey?: string; bindingId?: string; color: string; hasNote?: boolean;
   chapterIndex: number; txtAnchor?: { start: number; end: number };
 }
+const SELECTION_CSS = "html[data-compact-selection] ::selection{background-color:transparent !important;}\n";
 interface NativeHighlight { priority: number; add(range: Range): void; delete(range: Range): void; }
 interface HighlightAPI {
   Highlight: new (...ranges: Range[]) => NativeHighlight;
@@ -24,12 +26,26 @@ export class TxtWindowHighlights {
   private rangeCache = new WeakMap<HTMLElement, Map<string, CachedRange>>();
   private style: HTMLStyleElement;
   private api: HighlightAPI;
+  private selectionPaint: SVGSVGElement;
+  private selectionPath: SVGPathElement;
+  private previousIsolation: string;
   private click?: (event: Event) => void;
   private blocks: TxtBlockView[] = [];
   constructor(private doc: Document) {
     this.api = doc.defaultView as unknown as HighlightAPI;
     if (!this.api.Highlight || !this.api.CSS?.highlights) throw Error("Native TXT highlights are unavailable");
     this.style = doc.createElement("style"); this.style.dataset.txtHighlights = "true"; doc.head.append(this.style);
+    this.style.textContent = SELECTION_CSS;
+    this.previousIsolation = doc.body.style.isolation;
+    doc.body.style.isolation = "isolate";
+    this.selectionPaint = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
+    this.selectionPaint.dataset.txtSelection = "true";
+    this.selectionPaint.setAttribute("aria-hidden", "true");
+    this.selectionPaint.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:0;";
+    this.selectionPath = doc.createElementNS("http://www.w3.org/2000/svg", "path");
+    this.selectionPath.setAttribute("fill", "#f3a6a68c");
+    this.selectionPaint.append(this.selectionPath);
+    doc.body.append(this.selectionPaint);
     doc.addEventListener("click", this.handleClick, true);
   }
   async update(notes: WindowNote[], blocks: TxtBlockView[], click: (event: Event) => void) {
@@ -102,7 +118,7 @@ export class TxtWindowHighlights {
     }
     if (!this.stylesDirty) return;
     // Canonicalize colors through CSSOM; no raw SQL/renderer string enters CSS syntax.
-    const rules = Array.from(this.groups.values()).map(group => {
+    const rules = SELECTION_CSS + Array.from(this.groups.values()).map(group => {
       const match = /^(background|underline|strikethrough|wavy|dotted)-(.+)$/.exec(group.color), type = match?.[1] || "background";
       const probe = this.doc.createElement("span"); probe.style.color = match?.[2] || "#FEF3CD";
       const color = probe.style.color || "#FEF3CD";
@@ -141,13 +157,40 @@ export class TxtWindowHighlights {
       this.api.CSS.highlights.delete(group.name); this.groups.delete(entry.group); this.stylesDirty = true;
     }
   }
+  // Called from the window manager's existing coalesced frame for selection,
+  // scroll, layout and font changes. One SVG path, no per-character DOM wrappers.
+  updateSelection() {
+    const selection = this.doc.getSelection();
+    let path = "";
+    if (selection && !selection.isCollapsed && selection.rangeCount) {
+      const range = selection.getRangeAt(0);
+      const element = range.commonAncestorContainer.nodeType === 1
+        ? range.commonAncestorContainer as Element : range.commonAncestorContainer.parentElement;
+      const maxHeight = parseFloat(this.doc.defaultView!.getComputedStyle(element || this.doc.body).fontSize) * 2;
+      for (const rect of Array.from(range.getClientRects())) {
+        if (!rect.width || !rect.height || rect.height > maxHeight) continue;
+        const band = textBand(rect);
+        const x = band.left + this.doc.defaultView!.scrollX, y = band.top + this.doc.defaultView!.scrollY;
+        path += `M${x},${y}h${band.width}v${band.height}h${-band.width}Z`;
+      }
+    }
+    if (this.selectionPath.getAttribute("d") !== path) this.selectionPath.setAttribute("d", path);
+    if (path) {
+      if (!this.doc.documentElement.hasAttribute("data-compact-selection")) this.doc.documentElement.setAttribute("data-compact-selection", "");
+    }
+    else if (this.doc.documentElement.hasAttribute("data-compact-selection")) this.doc.documentElement.removeAttribute("data-compact-selection");
+  }
   private handleClick = (event: MouseEvent) => {
     if (!this.doc.getSelection()?.isCollapsed || !this.click) return;
     const caret = (this.doc as Document & { caretRangeFromPoint(x:number,y:number):Range|null }).caretRangeFromPoint(event.clientX,event.clientY);
     if (!caret) return;
     let point: ReturnType<typeof windowPoint>;
     try { point = windowPoint(this.blocks, caret.startContainer, caret.startOffset); } catch { return; }
-    const rows = Array.from(this.entries.values()).filter(({note}) => note.chapterIndex === point.block.chapter.index && note.txtAnchor && point.position >= point.block.chapter.bodyStart + note.txtAnchor.start && point.position < point.block.chapter.bodyStart + note.txtAnchor.end);
+    const rows = Array.from(this.entries.values()).filter(({note}) => note.chapterIndex === point.block.chapter.index && note.txtAnchor && point.position >= point.block.chapter.bodyStart + note.txtAnchor.start && point.position <= point.block.chapter.bodyStart + note.txtAnchor.end)
+      // Caret APIs round to the nearest insertion edge. The inclusive coarse
+      // interval admits the last glyph's right half; rectangles reject the
+      // preceding glyph's right half and the trimmed vertical margins.
+      .filter(entry => entry.ranges.some(range => Array.from(range.getClientRects()).some(rect => hitsText(rect, event.clientX, event.clientY))));
     rows.sort((a,b)=>(a.note.txtAnchor!.end-a.note.txtAnchor!.start)-(b.note.txtAnchor!.end-b.note.txtAnchor!.start));
     const entry = rows[0]; if (!entry) return;
     const target = this.doc.createElement("span");
@@ -157,5 +200,5 @@ export class TxtWindowHighlights {
     Object.defineProperty(routed,"target",{value:target}); this.click(routed); event.stopPropagation();
   };
   get ranges() { return Array.from(this.entries.values()).map(entry => ({ bindingId: entry.note.bindingId || entry.note.key, entityKey: entry.note.entityKey || entry.note.key, ranges: entry.ranges })); }
-  destroy() { this.revision++; for (const group of this.groups.values()) this.api.CSS.highlights.delete(group.name); this.groups.clear(); this.entries.clear(); this.rangeCache = new WeakMap(); this.blocks = []; this.doc.removeEventListener("click",this.handleClick,true); this.style.remove(); this.click = undefined; }
+  destroy() { this.revision++; for (const group of this.groups.values()) this.api.CSS.highlights.delete(group.name); this.groups.clear(); this.entries.clear(); this.rangeCache = new WeakMap(); this.blocks = []; this.doc.removeEventListener("click",this.handleClick,true); this.style.remove(); this.selectionPaint.remove(); this.doc.documentElement.removeAttribute("data-compact-selection"); this.doc.body.style.isolation = this.previousIsolation; this.click = undefined; }
 }
