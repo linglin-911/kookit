@@ -59,6 +59,9 @@ export const buildHighlightStyleForType = (
         return `background: ${color}; mix-blend-mode: multiply;`;
       }
       return `background: ${color};`;
+    case "dotted":
+      if (forPDFOverlay) return isVertical ? `border-right: 1px dotted ${color};` : `border-bottom: 1px dotted ${color};`;
+      return `background-color: transparent; text-decoration-line: underline; text-decoration-style: dotted; text-decoration-color: ${color}; text-decoration-thickness: 1px; text-underline-offset: 0.18em; text-decoration-skip-ink: none;`;
     case "underline":
       if (forPDFOverlay) {
         if (isVertical) {

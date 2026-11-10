@@ -103,11 +103,11 @@ export class TxtWindowHighlights {
     if (!this.stylesDirty) return;
     // Canonicalize colors through CSSOM; no raw SQL/renderer string enters CSS syntax.
     const rules = Array.from(this.groups.values()).map(group => {
-      const match = /^(background|underline|strikethrough|wavy)-(.+)$/.exec(group.color), type = match?.[1] || "background";
+      const match = /^(background|underline|strikethrough|wavy|dotted)-(.+)$/.exec(group.color), type = match?.[1] || "background";
       const probe = this.doc.createElement("span"); probe.style.color = match?.[2] || "#FEF3CD";
       const color = probe.style.color || "#FEF3CD";
       probe.style.cssText=buildHighlightStyleForType(`${type}-${/^#[0-9a-f]{3,8}$/i.test(match?.[2]||"")?match![2]:color}`,false,false);
-      const css=["background-color","color","text-decoration","text-decoration-color","text-decoration-style","text-decoration-thickness"].map(property=>`${property}:${probe.style.getPropertyValue(property)}`).join(";");
+      const css=["background-color","color","text-decoration","text-decoration-color","text-decoration-style","text-decoration-thickness","text-underline-offset","text-decoration-skip-ink"].map(property=>`${property}:${probe.style.getPropertyValue(property)}`).join(";");
       return `::highlight(${group.name}){${css}}`;
     }).join("\n");
     if(this.style.textContent!==rules)this.style.textContent=rules;
