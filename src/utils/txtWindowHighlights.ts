@@ -13,7 +13,7 @@ interface HighlightAPI {
   CSS: { highlights: Map<string, NativeHighlight> };
 }
 interface Entry { note: WindowNote; group: string; parts: TxtBlockView[]; ranges: Range[]; }
-interface CachedRange { range: Range; references: number; }
+interface CachedRange { range: Range; start: number; end: number; references: number; }
 interface PaintGroup { name: string; color: string; native: NativeHighlight; references: number; ranges: Map<Range, number>; }
 /** Chromium's native range paint preserves text nodes, selection, copy and DOM
  * budgets. Each entry owns only the mounted fragments of a binding. */
@@ -137,7 +137,7 @@ export class TxtWindowHighlights {
       previous.references++; return previous.range;
     }
     const range = windowRange([block], block.chapter.chapterId, start, end);
-    cached.set(key, { range, references: 1 }); return range;
+    cached.set(key, { range, start, end, references: 1 }); return range;
   }
   private release(entry: Entry) {
     const group = this.groups.get(entry.group);
@@ -180,19 +180,40 @@ export class TxtWindowHighlights {
     }
     else if (this.doc.documentElement.hasAttribute("data-compact-selection")) this.doc.documentElement.removeAttribute("data-compact-selection");
   }
-  private handleClick = (event: MouseEvent) => {
-    if (!this.doc.getSelection()?.isCollapsed || !this.click) return;
-    const caret = (this.doc as Document & { caretRangeFromPoint(x:number,y:number):Range|null }).caretRangeFromPoint(event.clientX,event.clientY);
+  private *hitRangesAtPoint(x: number, y: number) {
+    if (!this.entries.size) return;
+    const caret = this.doc.caretRangeFromPoint(x, y);
     if (!caret) return;
     let point: ReturnType<typeof windowPoint>;
     try { point = windowPoint(this.blocks, caret.startContainer, caret.startOffset); } catch { return; }
-    const rows = Array.from(this.entries.values()).filter(({note}) => note.chapterIndex === point.block.chapter.index && note.txtAnchor && point.position >= point.block.chapter.bodyStart + note.txtAnchor.start && point.position <= point.block.chapter.bodyStart + note.txtAnchor.end)
-      // Caret APIs round to the nearest insertion edge. The inclusive coarse
-      // interval admits the last glyph's right half; rectangles reject the
-      // preceding glyph's right half and the trimmed vertical margins.
-      .filter(entry => entry.ranges.some(range => Array.from(range.getClientRects()).some(rect => hitsText(rect, event.clientX, event.clientY))));
-    rows.sort((a,b)=>(a.note.txtAnchor!.end-a.note.txtAnchor!.start)-(b.note.txtAnchor!.end-b.note.txtAnchor!.start));
-    const entry = rows[0]; if (!entry) return;
+    // The caret can round to either side of a block boundary. Check both
+    // mounted neighbors at that position, using each distinct range once.
+    for (const block of this.blocks) {
+      if (block.chapter.index !== point.block.chapter.index || point.position < block.start || point.position > block.end) continue;
+      const cached = this.rangeCache.get(block.node);
+      if (!cached) continue;
+      for (const { range, start, end } of cached.values()) {
+        if (point.position >= start && point.position <= end && !range.collapsed &&
+            Array.from(range.getClientRects()).some(rect => hitsText(rect, x, y))) yield range;
+      }
+    }
+  }
+  hasAnnotationAtPoint(x: number, y: number) {
+    return !this.hitRangesAtPoint(x, y).next().done;
+  }
+  private handleClick = (event: MouseEvent) => {
+    if (!this.doc.getSelection()?.isCollapsed || !this.click) return;
+    const hits = new Set(this.hitRangesAtPoint(event.clientX, event.clientY));
+    if (!hits.size) return;
+    let entry: Entry | undefined, shortest = Infinity;
+    for (const candidate of this.entries.values()) {
+      const { start, end } = candidate.note.txtAnchor!;
+      if (end - start < shortest && candidate.ranges.some(range => hits.has(range))) {
+        entry = candidate;
+        shortest = end - start;
+      }
+    }
+    if (!entry) return;
     const target = this.doc.createElement("span");
     target.dataset.key = entry.note.bindingId || entry.note.key; target.dataset.bindingId = target.dataset.key;
     target.dataset.noteKey = entry.note.entityKey || entry.note.key;

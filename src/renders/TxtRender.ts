@@ -265,6 +265,9 @@ class TxtRender extends GeneralRender {
     return windowRange(this.txtWindow.views,chapterId,chapter.bodyStart+start,chapter.bodyStart+end);
   }
   getTxtHighlightRanges() { return this.windowHighlights?.ranges || []; }
+  hasTxtAnnotationAtPoint(x: number, y: number) {
+    return this.windowHighlights?.hasAnnotationAtPoint(x, y) ?? false;
+  }
   getTxtGeneration() { return this.txtGeneration; }
   private windowPosition(chapterIndex:number,offset:number) {
     const chapter=this.txtIndex!.chapters[chapterIndex];
