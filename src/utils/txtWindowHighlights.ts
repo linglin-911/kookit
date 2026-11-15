@@ -1,10 +1,11 @@
 import { buildHighlightStyleForType } from "./common";
 import { textBand, hitsText } from "./textHitGeometry";
+import { alternatingTxtAnnotations, TxtAnnotationEdges } from "./txtAnnotationLines";
 import { windowPoint, windowRange, TxtBlockView } from "../libs/txtWindowAnchors";
 
 export interface WindowNote {
   key: string; entityKey?: string; bindingId?: string; color: string; hasNote?: boolean;
-  chapterIndex: number; txtAnchor?: { start: number; end: number };
+  chapterIndex: number; txtAnchor?: { start: number; end: number }; txtAlternateColor?: string;
 }
 const SELECTION_CSS = "html[data-compact-selection] ::selection{background-color:transparent !important;}\n";
 interface NativeHighlight { priority: number; add(range: Range): void; delete(range: Range): void; }
@@ -21,6 +22,7 @@ export class TxtWindowHighlights {
   private entries = new Map<string, Entry>();
   private serial = 0;
   private revision = 0;
+  private completedRevision = 0;
   private stylesDirty = false;
   private groups = new Map<string, PaintGroup>();
   private rangeCache = new WeakMap<HTMLElement, Map<string, CachedRange>>();
@@ -77,7 +79,8 @@ export class TxtWindowHighlights {
       // Removing a block relocates live Range endpoints to a connected parent.
       // A matching block key and isConnected alone can therefore retain an empty
       // highlight after revisiting the same source coordinates.
-      if (old && old.note.color === note.color && old.note.entityKey === note.entityKey &&
+      if (old && old.note.color === note.color && old.note.txtAlternateColor === note.txtAlternateColor &&
+          old.note.entityKey === note.entityKey &&
           old.note.chapterIndex === note.chapterIndex &&
           old.note.txtAnchor?.start === note.txtAnchor.start && old.note.txtAnchor?.end === note.txtAnchor.end &&
           old.parts.length === parts.length && old.parts.every((part, index) =>
@@ -87,23 +90,8 @@ export class TxtWindowHighlights {
             parts[index].node.contains(range.endContainer))) { old.note = note; continue; }
       const ranges = parts.map(block => this.rangeFor(block, Math.max(block.start, block.chapter.bodyStart + note.txtAnchor!.start), Math.min(block.end, block.chapter.bodyStart + note.txtAnchor!.end)));
       if (old) this.release(old);
-      const priority = Math.max(0, 1000000 - (note.txtAnchor.end - note.txtAnchor.start));
-      const groupKey = JSON.stringify([note.color, priority]);
-      let group = this.groups.get(groupKey);
-      if (!group) {
-        const native = new this.api.Highlight(); native.priority = priority;
-        group = { name: `koodo-txt-note-${++this.serial}`, color: note.color, native, references: 0, ranges: new Map() };
-        this.groups.set(groupKey, group); this.api.CSS.highlights.set(group.name, native); this.stylesDirty = true;
-      }
-      // Equal-style/equal-priority paint shares one Chromium object and CSS rule.
-      // Each relationship retains its own exact ranges and click identity.
-      for (const range of ranges) {
-        const references = group.ranges.get(range) || 0;
-        if (!references) group.native.add(range);
-        group.ranges.set(range, references + 1);
-      }
-      group.references++;
-      this.entries.set(id, { note, group: groupKey, parts, ranges });
+      const group = this.addPaint(note, ranges, note.color);
+      this.entries.set(id, { note, group, parts, ranges });
     }
     for (const [id, entry] of this.entries) {
       if (++processed % 256 === 0 && performance.now() - chunkStarted >= 8) {
@@ -113,9 +101,34 @@ export class TxtWindowHighlights {
       }
       if (!active.has(id)) { this.release(entry); this.entries.delete(id); }
     }
-    for (const [key, group] of this.groups) if (!group.references) {
-      this.api.CSS.highlights.delete(group.name); this.groups.delete(key); this.stylesDirty = true;
+    this.completedRevision = revision;
+    this.reflow();
+  }
+  reflow() {
+    if (this.completedRevision !== this.revision) return;
+    const edges: TxtAnnotationEdges[] = [];
+    for (const [id, entry] of this.entries) {
+      const { note, parts, ranges } = entry;
+      if (!note.txtAlternateColor || !note.txtAnchor) continue;
+      const { start, end } = note.txtAnchor;
+      const firstBlock = parts[0], lastBlock = parts[parts.length - 1];
+      edges.push({
+        id, entity: note.entityKey || note.key, chapter: note.chapterIndex, start, end,
+        first: firstBlock.start <= firstBlock.chapter.bodyStart + start ? ranges[0] : undefined,
+        last: lastBlock.end >= lastBlock.chapter.bodyStart + end ? ranges[ranges.length - 1] : undefined,
+      });
     }
+    const alternate = alternatingTxtAnnotations(this.doc, edges);
+    for (const { id } of edges) {
+      const entry = this.entries.get(id)!;
+      const color = (alternate.has(id) && entry.note.txtAlternateColor) || entry.note.color;
+      if (this.groups.get(entry.group)?.color === color) continue;
+      this.releasePaint(entry);
+      entry.group = this.addPaint(entry.note, entry.ranges, color);
+    }
+    this.writeStyles();
+  }
+  private writeStyles() {
     if (!this.stylesDirty) return;
     // Canonicalize colors through CSSOM; no raw SQL/renderer string enters CSS syntax.
     const rules = SELECTION_CSS + Array.from(this.groups.values()).map(group => {
@@ -129,6 +142,28 @@ export class TxtWindowHighlights {
     if(this.style.textContent!==rules)this.style.textContent=rules;
     this.stylesDirty = false;
   }
+  private addPaint(note: WindowNote, ranges: Range[], color: string) {
+    const anchor = note.txtAnchor!;
+    const priority = Math.max(0, 1000000 - (anchor.end - anchor.start));
+    const key = JSON.stringify([color, priority]);
+    let group = this.groups.get(key);
+    if (!group) {
+      const native = new this.api.Highlight();
+      native.priority = priority;
+      group = { name: `koodo-txt-note-${++this.serial}`, color, native, references: 0, ranges: new Map() };
+      this.groups.set(key, group);
+      this.api.CSS.highlights.set(group.name, native);
+      this.stylesDirty = true;
+    }
+    // Equal-style/equal-priority paint shares a Chromium object and a CSS rule.
+    for (const range of ranges) {
+      const references = group.ranges.get(range) || 0;
+      if (!references) group.native.add(range);
+      group.ranges.set(range, references + 1);
+    }
+    group.references++;
+    return key;
+  }
   private rangeFor(block: TxtBlockView, start: number, end: number) {
     let cached = this.rangeCache.get(block.node);
     if (!cached) { cached = new Map(); this.rangeCache.set(block.node, cached); }
@@ -140,8 +175,6 @@ export class TxtWindowHighlights {
     cached.set(key, { range, start, end, references: 1 }); return range;
   }
   private release(entry: Entry) {
-    const group = this.groups.get(entry.group);
-    if (!group) return;
     for (const [index, range] of entry.ranges.entries()) {
       const block = entry.parts[index], anchor = entry.note.txtAnchor!;
       const key = `${Math.max(block.start, block.chapter.bodyStart + anchor.start)}:${Math.min(block.end, block.chapter.bodyStart + anchor.end)}`;
@@ -149,12 +182,21 @@ export class TxtWindowHighlights {
       if (shared?.range === range && --shared.references === 0) {
         cached!.delete(key); if (!cached!.size) this.rangeCache.delete(block.node);
       }
+    }
+    this.releasePaint(entry);
+  }
+  private releasePaint(entry: Entry) {
+    const group = this.groups.get(entry.group);
+    if (!group) return;
+    for (const range of entry.ranges) {
       const references = (group.ranges.get(range) || 1) - 1;
       if (references) group.ranges.set(range, references);
       else { group.ranges.delete(range); group.native.delete(range); }
     }
     if (--group.references === 0) {
-      this.api.CSS.highlights.delete(group.name); this.groups.delete(entry.group); this.stylesDirty = true;
+      this.api.CSS.highlights.delete(group.name);
+      this.groups.delete(entry.group);
+      this.stylesDirty = true;
     }
   }
   // Called from the window manager's existing coalesced frame for selection,

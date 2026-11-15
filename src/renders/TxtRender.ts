@@ -1,5 +1,6 @@
 import { resolveLegacyTxtPosition, searchTxtWindow, escapeTxtPattern } from "../utils/txtWindowText";
 import { TxtWindowHighlights, WindowNote } from "../utils/txtWindowHighlights";
+import { alternatingTxtAnnotations } from "../utils/txtAnnotationLines";
 import { selectedWindowAnchor, windowRange, windowPoint } from "../libs/txtWindowAnchors";
 import { TxtWindowManager } from "../utils/txtWindowManager";
 import type { PersistentTxtIndex } from "../libs/txtIndex";
@@ -109,6 +110,7 @@ class TxtRender extends GeneralRender {
           generation: this.txtGeneration, encoding: this.txtIndex.encoding,
           read: this.txtIndexStore.readChapterRange,
           paintSelection: () => this.windowHighlights?.updateSelection(),
+          reflowHighlights: () => this.windowHighlights?.reflow(),
           windowChanged: () => {
             this.clearWindowAuxiliary();
             void this.windowHighlights?.update(this.windowNotes, this.txtWindow?.views || [], this.windowClick)
@@ -490,7 +492,7 @@ class TxtRender extends GeneralRender {
     if(!chapter||!doc||!this.txtIndexStore?.sourceTicket)throw new Error("TXT source is unavailable for annotations");
     return {format:"TXT",sourceTicket:this.txtIndexStore.sourceTicket,...selectedTxtAnchor(doc,chapter)};
   }
-  async renderHighlighters(notes: Array<{key:string;entityKey?:string;bindingId?:string;color:string;hasNote?:boolean;notes?:string;chapterIndex?:number;txtAnchor?:{start:number;end:number}}>,handleNoteClick:(event:Event)=>void) {
+  async renderHighlighters(notes: (Omit<WindowNote, "chapterIndex"> & { chapterIndex?: number })[],handleNoteClick:(event:Event)=>void) {
     if (this.txtWindow) {
       this.windowNotes = notes.filter(note => note.txtAnchor).map(note => ({ ...note, chapterIndex: note.chapterIndex ?? Number(this.tempLocation.chapterDocIndex || 0) }));
       this.windowClick = handleNoteClick;
@@ -500,11 +502,20 @@ class TxtRender extends GeneralRender {
     if(!this.txtIndexStore?.sourceTicket)return super.renderHighlighters(notes,handleNoteClick);
     const doc=this.getDocument(),chapter=this.getTxtChapterSnapshot();if(!doc||!chapter)return;
     clearHighlight(doc,this.diagnosticTraceId);
-    // Resolve against the current DOM: wrapping an earlier overlapping range
-    // mutates live Range endpoints.
-    for(const item of notes.filter(item=>item.txtAnchor)){
-      const range=txtRange(doc,chapter,item.txtAnchor!.start,item.txtAnchor!.end);
-      highlightRange({nativeRange:range},item.color,item.bindingId||item.key,handleNoteClick,doc,!!item.hasNote,false,"");
+    const anchored = notes.filter(item => item.txtAnchor);
+    const alternate = alternatingTxtAnnotations(doc, anchored.filter(item => item.txtAlternateColor).map(item => {
+      const { start, end } = item.txtAnchor!;
+      const range = txtRange(doc, chapter, start, end);
+      return { id: item.bindingId || item.key, entity: item.entityKey || item.key, chapter: chapter.index,
+        start, end, first: range, last: range };
+    }));
+    // Wrapping earlier notes can move text nodes, so resolve each range
+    // again on the current DOM when applying its paint.
+    for (const item of anchored) {
+      const id = item.bindingId || item.key;
+      const color = (alternate.has(id) && item.txtAlternateColor) || item.color;
+      const range = txtRange(doc, chapter, item.txtAnchor!.start, item.txtAnchor!.end);
+      highlightRange({nativeRange:range},color,id,handleNoteClick,doc,!!item.hasNote,false,"");
     }
     doc.getSelection()?.removeAllRanges();
     for(const item of notes){

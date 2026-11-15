@@ -31,6 +31,7 @@ interface Options {
         generation: string | null;
     }) => void;
     windowChanged?: () => void;
+    reflowHighlights?: () => void;
     paintSelection?: () => void;
     error: (error: unknown) => void;
 }
@@ -54,6 +55,7 @@ export class TxtWindowManager {
         top: number;
     };
     private root: HTMLElement;
+    private needsHighlightReflow = false;
     private layoutSize = { width: 0, height: 0 };
     private reads: Promise<unknown> = Promise.resolve();
     private cache = new TxtTextLRU(512 * 1024);
@@ -131,6 +133,7 @@ export class TxtWindowManager {
         this.root.style.paddingBottom = this.options.element.clientHeight + "px";
         this.height();
         this.compensate();
+        this.needsHighlightReflow = true;
         this.schedule();
     };
     private height() {
@@ -161,7 +164,16 @@ export class TxtWindowManager {
     private schedule = () => {
         if (this.dead || this.frame)
             return;
-        this.frame = requestAnimationFrame(() => { this.frame = 0; this.emitPosition(); this.options.paintSelection?.(); void this.fill().catch(this.options.error); });
+        this.frame = requestAnimationFrame(() => {
+            this.frame = 0;
+            this.emitPosition();
+            this.options.paintSelection?.();
+            if (this.needsHighlightReflow) {
+                this.needsHighlightReflow = false;
+                this.options.reflowHighlights?.();
+            }
+            void this.fill().catch(this.options.error);
+        });
     };
     private readText(index: number, valid: () => boolean): Promise<string | undefined> {
         const request = this.reads.then(async () => {
@@ -396,7 +408,7 @@ export class TxtWindowManager {
         this.observer.disconnect();
         this.root.replaceChildren(); this.root.remove();
         this.options.read = async () => { throw Error("TXT window is closed"); };
-        this.options.changed = () => {}; this.options.windowChanged = undefined; this.options.paintSelection = undefined; this.options.error = () => {};
+        this.options.changed = () => {}; this.options.windowChanged = undefined; this.options.reflowHighlights = undefined; this.options.paintSelection = undefined; this.options.error = () => {};
         this.options.chapters = []; this.options.checkpoints = [];
         this.reads = Promise.resolve();
         this.mounted = [];
