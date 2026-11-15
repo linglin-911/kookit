@@ -113,7 +113,7 @@ export class TxtWindowHighlights {
       const { start, end } = note.txtAnchor;
       const firstBlock = parts[0], lastBlock = parts[parts.length - 1];
       edges.push({
-        id, entity: note.entityKey || note.key, chapter: note.chapterIndex, start, end,
+        id, chapter: note.chapterIndex, start, end,
         first: firstBlock.start <= firstBlock.chapter.bodyStart + start ? ranges[0] : undefined,
         last: lastBlock.end >= lastBlock.chapter.bodyStart + end ? ranges[ranges.length - 1] : undefined,
       });

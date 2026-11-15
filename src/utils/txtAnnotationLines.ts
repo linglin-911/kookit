@@ -1,6 +1,5 @@
 export interface TxtAnnotationEdges {
   id: string;
-  entity: string;
   chapter: number;
   start: number;
   end: number;
@@ -14,14 +13,14 @@ interface VisualLine {
   height: number;
   paragraph: HTMLElement | null;
 }
-interface EndingLine {
-  line: VisualLine;
-  annotation: TxtAnnotationEdges;
+interface AnnotationGroup {
+  ids: string[];
+  first: TxtAnnotationEdges;
+  last: TxtAnnotationEdges;
 }
 
-/** Assign paint on the mounted layout. Only non-overlapping bindings on
- * consecutive lines can alternate. A column break or an unmarked line
- * starts a new run. */
+/** Paint overlapping bindings as one group. Alternate between disjoint groups
+ * on the same or consecutive visual lines within a column. */
 export function alternatingTxtAnnotations(doc: Document, annotations: TxtAnnotationEdges[]) {
   const alternate = new Set<string>();
   if (annotations.length < 2) return alternate;
@@ -40,8 +39,6 @@ export function alternatingTxtAnnotations(doc: Document, annotations: TxtAnnotat
   const styles = new WeakMap<Element, number>();
   const rangeRects = new WeakMap<Range, { first?: DOMRect; last?: DOMRect }>();
   const paragraphRects = new WeakMap<HTMLElement, ReturnType<typeof visibleEdges>>();
-  const endings = new Map<number, EndingLine[]>();
-  const starts: EndingLine[] = [];
 
   function visibleEdges(range: Range) {
     const rects = Array.from(range.getClientRects()).filter(rect => rect.width > 0 && rect.height > 0);
@@ -91,41 +88,33 @@ export function alternatingTxtAnnotations(doc: Document, annotations: TxtAnnotat
     return Math.abs(next.position - previous.position - height) <= Math.max(tolerance, height * 0.23);
   };
 
-  for (const annotation of annotations) {
-    const first = annotation.first && measure(annotation.first, "first");
-    if (first) starts.push({ line: first, annotation });
-    const last = annotation.last && measure(annotation.last, "last");
-    if (!last) continue;
-    const column = endings.get(last.column);
-    if (column) column.push({ line: last, annotation });
-    else endings.set(last.column, [{ line: last, annotation }]);
-  }
-  for (const column of endings.values()) {
-    column.sort((a, b) => a.line.position - b.line.position || a.annotation.chapter - b.annotation.chapter ||
-      a.annotation.end - b.annotation.end);
-  }
-  starts.sort((a, b) => a.annotation.chapter - b.annotation.chapter || a.annotation.start - b.annotation.start);
-  for (const { annotation, line } of starts) {
-    const endingsInColumn = endings.get(line.column);
-    if (!endingsInColumn) continue;
-    const tolerance = Math.min(5, line.height * 0.25);
-    let low = 0, high = endingsInColumn.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      if (endingsInColumn[middle].line.position < line.position - tolerance) low = middle + 1;
-      else high = middle;
+  const sorted = [...annotations].sort((a, b) =>
+    a.chapter - b.chapter || a.start - b.start || b.end - a.end);
+  const groups: AnnotationGroup[] = [];
+  for (const annotation of sorted) {
+    const group = groups[groups.length - 1];
+    if (!group || group.last.chapter !== annotation.chapter || annotation.start >= group.last.end) {
+      groups.push({ ids: [annotation.id], first: annotation, last: annotation });
+      continue;
     }
-    if (low === 0) continue;
-    const previousPosition = endingsInColumn[low - 1].line.position;
-    for (let i = low - 1; i >= 0 && previousPosition - endingsInColumn[i].line.position <= tolerance; i--) {
-      const previous = endingsInColumn[i];
-      const prior = previous.annotation;
-      if (prior.entity === annotation.entity || prior.chapter > annotation.chapter ||
-        (prior.chapter === annotation.chapter && prior.end > annotation.start)) continue;
-      if (!consecutive(previous.line, line, tolerance)) continue;
-      if (!alternate.has(prior.id)) alternate.add(annotation.id);
-      break;
+    group.ids.push(annotation.id);
+    if (annotation.end > group.last.end) group.last = annotation;
+  }
+
+  let previous: VisualLine | undefined;
+  let previousRed = false;
+  for (const group of groups) {
+    const first = group.first.first && measure(group.first.first, "first");
+    let red = false;
+    if (first && previous && first.column === previous.column && !previousRed) {
+      const tolerance = Math.min(5, first.height * 0.25);
+      const distance = first.position - previous.position;
+      const sameLine = first.paragraph === previous.paragraph && Math.abs(distance) <= tolerance;
+      red = sameLine || (distance > tolerance && consecutive(previous, first, tolerance));
     }
+    if (red) for (const id of group.ids) alternate.add(id);
+    previous = group.last.last && measure(group.last.last, "last");
+    previousRed = red;
   }
   return alternate;
 }

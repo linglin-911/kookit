@@ -506,7 +506,7 @@ class TxtRender extends GeneralRender {
     const alternate = alternatingTxtAnnotations(doc, anchored.filter(item => item.txtAlternateColor).map(item => {
       const { start, end } = item.txtAnchor!;
       const range = txtRange(doc, chapter, start, end);
-      return { id: item.bindingId || item.key, entity: item.entityKey || item.key, chapter: chapter.index,
+      return { id: item.bindingId || item.key, chapter: chapter.index,
         start, end, first: range, last: range };
     }));
     // Wrapping earlier notes can move text nodes, so resolve each range
