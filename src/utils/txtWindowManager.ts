@@ -25,7 +25,7 @@ interface Options {
     generation: string | null;
     read: (chapter: PersistentTxtChapter, offset: number, length: number) => Promise<Uint8Array>;
     encoding: string;
-    paragraphSpacing?: boolean;
+    readerTypography?: boolean;
     changed: (position: {
         chapter: number;
         offset: number;
@@ -113,8 +113,8 @@ export class TxtWindowManager {
             range.setEnd(caret.startContainer, Math.min((caret.startContainer.textContent || "").length, caret.startOffset + 1));
             return { node: caret.startContainer as Text, offset: caret.startOffset, top: range.getBoundingClientRect().top - this.viewport() };
         }
-        const node = m.node.firstChild as Text;
-        if (!node || node.nodeType !== 3)
+        const node = doc.createTreeWalker(m.node, NodeFilter.SHOW_TEXT).nextNode() as Text | null;
+        if (!node)
             return undefined;
         const range = doc.createRange();
         range.setStart(node, 0);
@@ -207,16 +207,34 @@ export class TxtWindowManager {
         node.dataset.txtBlock = String(index);
         node.dataset.txtStart = String(block.start);
         node.dataset.txtEnd = String(block.end);
-        if (!this.options.paragraphSpacing) {
+        if (!this.options.readerTypography) {
             node.textContent = text;
             return { block, node, text, nodeCount: 2 };
         }
-        // Keep every original LF in a text node. A marker adds height only at
-        // source paragraph boundaries and introduces no characters into selections.
-        let start = 0, nodeCount = 1;
-        for (const line of text.matchAll(/[^\n]*\n/g)) {
+        const chapter = this.options.chapters[block.chapter];
+        const headingEnd = chapter.hasTitle ? Math.max(0, Math.min(text.length, chapter.bodyStart - block.start)) : 0;
+        let nodeCount = 1;
+        if (headingEnd > 0) {
+            const heading = this.options.doc.createElement("strong");
+            heading.dataset.txtHeading = "";
+            if (block.start === chapter.start) heading.dataset.txtHeadingStart = "";
+            const endsHeading = block.start + headingEnd === chapter.bodyStart;
+            if (endsHeading) heading.dataset.txtHeadingEnd = "";
+            const hasNewline = endsHeading && text[headingEnd - 1] === "\n";
+            heading.textContent = text.slice(0, headingEnd - Number(hasNewline));
+            node.append(heading);
+            nodeCount += 2;
+            if (hasNewline) {
+                node.append("\n");
+                nodeCount++;
+            }
+        }
+        // Keep every original LF in a text node. The paragraph and heading
+        // spacing is visual, so text selections still use source offsets.
+        let start = headingEnd;
+        for (const line of text.slice(headingEnd).matchAll(/[^\n]*\n/g)) {
             if (!line[0].trim()) continue;
-            const newline = (line.index ?? 0) + line[0].length - 1;
+            const newline = headingEnd + (line.index ?? 0) + line[0].length - 1;
             const end = this.options.doc.createElement("span");
             end.dataset.txtParagraphEnd = "";
             end.textContent = "\n";
