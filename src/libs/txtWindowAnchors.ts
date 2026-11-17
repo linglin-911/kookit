@@ -29,8 +29,10 @@ export function windowRange(blocks: TxtBlockView[], chapterId: string, start: nu
     const block = last ? candidates[0] : candidates[candidates.length - 1];
     if (!block) throw Error("TXT source interval is unavailable");
     const nodes = verifyBlock(block); let remaining = position - block.start;
-    for (const node of nodes) {
-      if (remaining <= node.length) {
+    for (const [index, node] of nodes.entries()) {
+      // At a source newline boundary, start in the next node so Chromium
+      // doesn't report an empty first rectangle on the preceding visual line.
+      if (remaining < node.length || (remaining === node.length && (last || index === nodes.length - 1))) {
         windowPoint(blocks, node, remaining); return { node: node as Node, offset: remaining };
       }
       remaining -= node.length;
@@ -43,7 +45,7 @@ export function windowRange(blocks: TxtBlockView[], chapterId: string, start: nu
   let next = start;
   for (const block of covered) { if (block.start > next) throw Error("TXT source gap is not mounted"); verifyBlock(block); next = Math.max(next, block.end); }
   if (next < end) throw Error("TXT source gap is not mounted");
-  const first = resolve(start, false), last = resolve(end, true), range = first.node.ownerDocument!.createRange();
+  const first = resolve(start, false), last = start === end ? first : resolve(end, true), range = first.node.ownerDocument!.createRange();
   range.setStart(first.node, first.offset); range.setEnd(last.node, last.offset); return range;
 }
 export function selectedWindowAnchor(doc: Document, blocks: TxtBlockView[]) {

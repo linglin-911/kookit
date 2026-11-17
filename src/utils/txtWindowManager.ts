@@ -1,5 +1,5 @@
 import { TxtTextLRU } from "./txtResources";
-import type { TxtBlockView } from "../libs/txtWindowAnchors";
+import { windowRange, type TxtBlockView } from "../libs/txtWindowAnchors";
 import type { PersistentTxtChapter } from "../libs/txtIndex";
 import type { TxtCheckpoint } from "../libs/txtBlocks";
 export const TXT_WINDOW_BUDGET = { chapters: 24, blocks: 24, characters: 128 * 1024, nodes: 20000 };
@@ -14,6 +14,7 @@ interface Mounted {
     block: TxtWindowBlock;
     node: HTMLElement;
     text: string;
+    nodeCount: number;
 }
 interface Options {
     doc: Document;
@@ -24,6 +25,7 @@ interface Options {
     generation: string | null;
     read: (chapter: PersistentTxtChapter, offset: number, length: number) => Promise<Uint8Array>;
     encoding: string;
+    paragraphSpacing?: boolean;
     changed: (position: {
         chapter: number;
         offset: number;
@@ -205,8 +207,28 @@ export class TxtWindowManager {
         node.dataset.txtBlock = String(index);
         node.dataset.txtStart = String(block.start);
         node.dataset.txtEnd = String(block.end);
-        node.textContent = text;
-        return { block, node, text };
+        if (!this.options.paragraphSpacing) {
+            node.textContent = text;
+            return { block, node, text, nodeCount: 2 };
+        }
+        // Keep every original LF in a text node. A marker adds height only at
+        // source paragraph boundaries and introduces no characters into selections.
+        let start = 0, nodeCount = 1;
+        for (const line of text.matchAll(/[^\n]*\n/g)) {
+            if (!line[0].trim()) continue;
+            const newline = (line.index ?? 0) + line[0].length - 1;
+            const end = this.options.doc.createElement("span");
+            end.dataset.txtParagraphEnd = "";
+            end.textContent = "\n";
+            node.append(text.slice(start, newline), end);
+            nodeCount += 3;
+            start = newline + 1;
+        }
+        if (start < text.length) {
+            node.append(text.slice(start));
+            nodeCount++;
+        }
+        return { block, node, text, nodeCount };
     }
     private chapterNode(chapter: number) {
         const id = this.options.chapters[chapter].chapterId;
@@ -251,12 +273,12 @@ export class TxtWindowManager {
         while (walker.nextNode() && count <= TXT_WINDOW_BUDGET.nodes) count++;
         return count;
     }
-    private fits(block: TxtWindowBlock) {
+    private fits(block: TxtWindowBlock, nodeCount = 2) {
         const chapters = new Set(this.mounted.map(m => m.block.chapter));
         chapters.add(block.chapter);
         return chapters.size <= TXT_WINDOW_BUDGET.chapters && this.mounted.length < TXT_WINDOW_BUDGET.blocks &&
             this.mounted.reduce((n, m) => n + m.block.end - m.block.start, 0) + block.end - block.start <= TXT_WINDOW_BUDGET.characters &&
-            this.nodeCount() + 5 <= TXT_WINDOW_BUDGET.nodes;
+            this.nodeCount() + nodeCount + 3 <= TXT_WINDOW_BUDGET.nodes;
     }
     private evict(direction: number) {
         const m = direction > 0 ? this.mounted[0] : this.mounted[this.mounted.length - 1];
@@ -314,8 +336,9 @@ export class TxtWindowManager {
                 if (!this.fits(this.blocks[index]))
                     break;
                 const m = await this.load(index, token);
-                if (!m)
-                    break;
+                if (!m) break;
+                while (!this.fits(m.block, m.nodeCount) && this.evict(direction)) { /* Include paragraph markers in the budget. */ }
+                if (!this.fits(m.block, m.nodeCount)) break;
                 this.mount(m);
             }
             if (this.dead || token !== this.token) return;
@@ -356,14 +379,12 @@ export class TxtWindowManager {
         this.anchor = undefined;
         this.mount(m);
         this.options.element.scrollTop = 0;
-        const text = m.node.firstChild;
-        if (text) {
-            let local = Math.min(text.textContent!.length, Math.max(0, target.start + offset - m.block.start));
-            if (local > 0 && /[\uDC00-\uDFFF]/.test(text.textContent![local] || ""))
-                local--;
-            const range = this.options.doc.createRange();
-            range.setStart(text, local);
-            range.setEnd(text, Math.min(text.textContent!.length, local + 1));
+        if (m.text.length) {
+            let position = Math.min(m.block.end, Math.max(m.block.start, target.start + offset));
+            const local = position - m.block.start;
+            if (/[\uDC00-\uDFFF]/.test(m.text[local] || "")) position--;
+            const length = /[\uD800-\uDBFF]/.test(m.text[position - m.block.start] || "") ? 2 : 1;
+            const range = windowRange(this.views, target.chapterId, position, Math.min(m.block.end, position + length));
             this.options.element.scrollTop = Math.max(0, range.getBoundingClientRect().top);
         }
         this.emitPosition();

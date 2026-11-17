@@ -24,6 +24,7 @@ import { beginDiagnostic, diagnosticError } from "../utils/diagnostics";
 class TxtRender extends GeneralRender {
   txtWindow?: TxtWindowManager;
   private continuousScroll: boolean;
+  private paragraphSpacing: boolean;
   private disposed = false;
   private closeTask?: Promise<void>;
   private parseVersion = 0;
@@ -58,6 +59,7 @@ class TxtRender extends GeneralRender {
     this.charset = config.charset;
     this.parserRegex = config.parserRegex;
     this.txtIndexStore = config.txtIndexStore;
+    this.paragraphSpacing = config.txtParagraphSpacing === true;
     this.onTxtWindowPosition = config.onTxtWindowPosition;
     const positionCallback = config.onTxtWindowPosition;
     if (typeof positionCallback?.cancel === "function") this.addCleanup(() => positionCallback.cancel());
@@ -108,6 +110,7 @@ class TxtRender extends GeneralRender {
         this.txtWindow = new TxtWindowManager({ doc, iframe: this.getIframe()!, element,
           chapters: this.txtIndex.chapters, checkpoints: this.txtIndex.checkpoints,
           generation: this.txtGeneration, encoding: this.txtIndex.encoding,
+          paragraphSpacing: this.paragraphSpacing,
           read: this.txtIndexStore.readChapterRange,
           paintSelection: () => this.windowHighlights?.updateSelection(),
           reflowHighlights: () => this.windowHighlights?.reflow(),
