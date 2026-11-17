@@ -55,6 +55,7 @@ export class TxtWindowManager {
         node: Text;
         offset: number;
         top: number;
+        preserveHeadingSpace?: boolean;
     };
     private root: HTMLElement;
     private needsHighlightReflow = false;
@@ -100,10 +101,19 @@ export class TxtWindowManager {
         return this.mounted.find(m => this.rect(m).bottom > top + 1) || this.mounted[this.mounted.length - 1];
     }
     private capture() {
+        const doc = this.options.doc;
+        const previous = this.anchor;
+        const heading = previous?.node.parentElement;
+        if (previous?.preserveHeadingSpace && heading?.isConnected) {
+            const top = this.textTop(previous.node, 0) - this.viewport();
+            const margin = parseFloat(doc.defaultView!.getComputedStyle(heading).scrollMarginTop);
+            // A caret in the leading space can snap to the previous chapter or
+            // its separator. Keep using the heading until the viewport leaves its space.
+            if (top > 2 && top <= margin + 1) return { ...previous, top };
+        }
         const m = this.visible();
         if (!m)
             return undefined;
-        const doc = this.options.doc;
         const caret = (doc as Document & {
             caretRangeFromPoint?: (x: number, y: number) => Range | null;
         })
@@ -116,18 +126,18 @@ export class TxtWindowManager {
         const node = doc.createTreeWalker(m.node, NodeFilter.SHOW_TEXT).nextNode() as Text | null;
         if (!node)
             return undefined;
-        const range = doc.createRange();
-        range.setStart(node, 0);
-        range.setEnd(node, Math.min(1, node.length));
-        return { node, offset: 0, top: range.getBoundingClientRect().top - this.viewport() };
+        return { node, offset: 0, top: this.textTop(node, 0) - this.viewport() };
+    }
+    private textTop(node: Text, offset: number) {
+        const range = this.options.doc.createRange();
+        range.setStart(node, offset);
+        range.setEnd(node, Math.min(node.length, offset + 1));
+        return range.getBoundingClientRect().top;
     }
     private compensate(anchor = this.anchor) {
         if (!anchor?.node.isConnected)
             return;
-        const range = this.options.doc.createRange();
-        range.setStart(anchor.node, anchor.offset);
-        range.setEnd(anchor.node, Math.min(anchor.node.length, anchor.offset + 1));
-        this.options.element.scrollTop += range.getBoundingClientRect().top - this.viewport() - anchor.top;
+        this.options.element.scrollTop += this.textTop(anchor.node, anchor.offset) - this.viewport() - anchor.top;
     }
     private layoutChanged = () => {
         if (this.dead)
@@ -372,7 +382,7 @@ export class TxtWindowManager {
             }
         }
     }
-    async jump(chapter: number, offset = 0) {
+    async jump(chapter: number, offset = 0, preserveHeadingSpace = false) {
         if (this.dead) return;
         const target = this.options.chapters[chapter];
         if (!target || !Number.isSafeInteger(offset) || offset < 0 || offset > target.end - target.start)
@@ -403,7 +413,21 @@ export class TxtWindowManager {
             if (/[\uDC00-\uDFFF]/.test(m.text[local] || "")) position--;
             const length = /[\uD800-\uDBFF]/.test(m.text[position - m.block.start] || "") ? 2 : 1;
             const range = windowRange(this.views, target.chapterId, position, Math.min(m.block.end, position + length));
-            this.options.element.scrollTop = Math.max(0, range.getBoundingClientRect().top);
+            const top = range.getBoundingClientRect().top;
+            const node = range.startContainer;
+            const heading = node.parentElement;
+            if (preserveHeadingSpace && offset === 0 && node.nodeType === Node.TEXT_NODE && heading?.hasAttribute("data-txt-heading-start")) {
+                const margin = parseFloat(this.options.doc.defaultView!.getComputedStyle(heading).scrollMarginTop) || 0;
+                this.options.element.scrollTop = Math.max(0, top - margin);
+                this.anchor = {
+                    node: node as Text,
+                    offset: range.startOffset,
+                    top: top - this.viewport(),
+                    preserveHeadingSpace: true,
+                };
+            } else {
+                this.options.element.scrollTop = Math.max(0, top);
+            }
         }
         this.emitPosition();
         await this.fill();

@@ -430,8 +430,13 @@ class TxtRender extends GeneralRender {
   isTxtWindowActive() { return !!this.txtWindow; }
   async goToChapter(index: number, href: string, title: string) {
     if (!this.txtWindow) return super.goToChapter(index, href, title);
+    await this.jumpToTxtChapter(index);
+  }
+  private async jumpToTxtChapter(index: number, preserveHeadingSpace = false) {
     this.navigationVersion++;
-    this.resetTxtAudio(); await this.txtWindow.jump(Number(index)); this.trigger("rendered");
+    this.resetTxtAudio();
+    await this.txtWindow!.jump(Number(index), 0, preserveHeadingSpace);
+    this.trigger("rendered");
   }
   async goToPosition(value: string) {
     if (this.disposed) return;
@@ -481,7 +486,11 @@ class TxtRender extends GeneralRender {
       (section.chapter?.chapterId || `volatile-${index}`) !== chapterId) {
       throw new Error("TXT directory belongs to a different index generation");
     }
-    await this.goToChapterDocIndex(index);
+    if (this.txtWindow) {
+      await this.jumpToTxtChapter(index, true);
+    } else {
+      await this.goToChapterDocIndex(index);
+    }
   }
   getTxtChapterSnapshot(): PersistentTxtChapter | undefined {
     return this.book?.sections?.[Number(this.tempLocation?.chapterDocIndex || 0)]?.chapter;
