@@ -235,8 +235,11 @@ export class TxtWindowManager {
             node.append(heading);
             nodeCount += 2;
             if (hasNewline) {
-                node.append("\n");
-                nodeCount++;
+                const headingBreak = this.options.doc.createElement("span");
+                headingBreak.dataset.txtHeadingBreak = "";
+                headingBreak.textContent = "\n";
+                node.append(headingBreak);
+                nodeCount += 2;
             }
         }
         // Keep every original LF in a text node. The paragraph and heading
